@@ -7,3 +7,6 @@ requires-python = ">=3.13"
 dependencies = [
     "pyserial>=3.5",
 ]
+
+[project.scripts]
+updater = "thd74_updater:main"
