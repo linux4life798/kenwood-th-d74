@@ -219,27 +219,23 @@ def run(port: str, baud: int, reply_timeout: float = 2.0):
 
         print("# Send start-program command.")
         f.StartProgramming()
-        reply = f.RecvRaw(0.250)
-        print(f"RX {reply.hex(' ') if reply else None}")
+        print(f.RecvFrame())
 
         time.sleep(0.250)
 
         print("# Send token/session command.")
         f.StartSession()
-        reply = f.RecvRaw(0.250)
-        print(f"RX {reply.hex(' ') if reply else None}")
+        print(f.RecvFrame())
 
         time.sleep(0.250)
         print("# Send status query command.")
         f.SendPacket(0x31)
-        reply = f.RecvRaw(0.250)
-        print(f"RX {reply.hex(' ') if reply else None}")
+        print(f.RecvFrame())
 
         time.sleep(0.250)
         print("# Send complete command.")
         f.Complete()
-        reply = f.RecvRaw(0.250)
-        print(f"RX {reply.hex(' ') if reply else None}")
+        print(f.RecvFrame())
 
 
 def main():
