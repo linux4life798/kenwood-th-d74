@@ -8,7 +8,9 @@ from dataclasses import dataclass
 
 SYNC = b"\xab\xab"
 MAGIC = b"FPROMOD"
-MAGIC_REPLY = b"\x16\x06"
+MAGIC_UNLOCK_ACK = b"\x16"
+MAGIC_MODE_OK = b"\x06"
+MAGIC_REPLY = MAGIC_UNLOCK_ACK + MAGIC_MODE_OK
 HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
 
 def _xor(data: bytes, key: int) -> bytes:
@@ -172,9 +174,19 @@ class Fldm:
     def SendPacket(self, verb: int, payload: bytes = b"", *, header: int = 0) -> None:
         self.SendFrame(FldmFrame(verb=verb, payload=payload, header=header))
 
-    def Unlock(self, timeout: float = 1.0) -> bytes | None:
+    def Unlock(self, timeout: float = 1.0) -> None:
         self.SendRaw(MAGIC)
-        return self.RecvRaw(timeout)
+        unlock_ack = self._RecvExact(1, timeout)
+        if unlock_ack != MAGIC_UNLOCK_ACK:
+            raise RuntimeError(
+                f"unexpected unlock ACK {unlock_ack.hex(' ')}, expected {MAGIC_UNLOCK_ACK.hex(' ')}"
+            )
+
+        mode_ok = self._RecvExact(1, timeout)
+        if mode_ok != MAGIC_MODE_OK:
+            raise RuntimeError(
+                f"unexpected mode-change OK {mode_ok.hex(' ')}, expected {MAGIC_MODE_OK.hex(' ')}"
+            )
 
     def StartProgramming(self) -> None:
         # The one-byte payload must be zero; any other value errors in firmware.
@@ -204,8 +216,7 @@ def run(port: str, baud: int, reply_timeout: float = 2.0):
     with Fldm(port, baud=baud, reply_timeout=reply_timeout) as f:
         # Start unencrypted program mode.
         print("# Starting unencrypted program mode.")
-        reply = f.Unlock()
-        print(f"RX {reply.hex(' ') if reply else None}")
+        f.Unlock()
 
         time.sleep(0.250)
 
