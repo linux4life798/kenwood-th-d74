@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, re, time
+import argparse, time
 from types import TracebackType
 import serial
-# import dnfile
 from dataclasses import dataclass
 
 SYNC = b"\xab\xab"
@@ -11,10 +10,11 @@ MAGIC = b"FPROMOD"
 MAGIC_UNLOCK_ACK = b"\x16"
 MAGIC_MODE_OK = b"\x06"
 MAGIC_REPLY = MAGIC_UNLOCK_ACK + MAGIC_MODE_OK
-HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
+
 
 def _xor(data: bytes, key: int) -> bytes:
     return data if key == 0 else bytes(b ^ key for b in data)
+
 
 @dataclass(frozen=True, slots=True)
 class FldmFrame:
@@ -54,6 +54,7 @@ class FldmFrame:
 
         frame = SYNC + self._body_without_checksum() + bytes([self.checksum])
         return _xor(frame, xor_key)
+
 
 class Fldm:
     def __init__(
@@ -153,7 +154,9 @@ class Fldm:
 
         expected = sum(head + payload) & 0xFF
         if checksum != expected:
-            raise ValueError(f"bad checksum: got 0x{checksum:02x}, expected 0x{expected:02x}")
+            raise ValueError(
+                f"bad checksum: got 0x{checksum:02x}, expected 0x{expected:02x}"
+            )
 
         verb = head[5]
         return FldmFrame(verb=verb, payload=payload, header=header)
@@ -205,12 +208,6 @@ class Fldm:
             raise ValueError("complete code must be two bytes")
         self.SendPacket(0x50, code)
 
-# def extract_script(exe: Path) -> list[str]:
-#     pe = dnfile.dnPE(str(exe))
-#     for r in pe.net.resources:
-#         if str(r.name).endswith("TH-D74_Firm_E.txt"):
-#             return list(decode_lines(r.data))
-#     raise RuntimeError("resource TH-D74_Firm_E.txt not found")
 
 def run(port: str, baud: int, reply_timeout: float = 2.0):
     with Fldm(port, baud=baud, reply_timeout=reply_timeout) as f:
@@ -243,6 +240,7 @@ def run(port: str, baud: int, reply_timeout: float = 2.0):
         f.Complete()
         reply = f.RecvRaw(0.250)
         print(f"RX {reply.hex(' ') if reply else None}")
+
 
 def main():
     ap = argparse.ArgumentParser()
