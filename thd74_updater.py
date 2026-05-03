@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import argparse, re, time
-from pathlib import Path
+from types import TracebackType
 import serial
 # import dnfile
 from dataclasses import dataclass
@@ -53,84 +53,145 @@ class FldmFrame:
         frame = SYNC + self._body_without_checksum() + bytes([self.checksum])
         return _xor(frame, xor_key)
 
-def send(ser: serial.Serial, data: bytes):
-    print(f"TX {data.hex(' ')}")
-    ser.write(data)
-    ser.flush()
+class Fldm:
+    def __init__(
+        self,
+        port: str,
+        *,
+        baud: int = 115200,
+        reply_timeout: float = 2.0,
+        xor_key: int = 0,
+        max_payload: int = 4096,
+    ) -> None:
+        if not 0 <= xor_key <= 0xFF:
+            raise ValueError("xor_key must fit in one byte")
 
-def send_frame(ser: serial.Serial, frame: FldmFrame):
-    send(ser, frame.to_bytes())
+        self.reply_timeout = reply_timeout
+        self.xor_key = xor_key
+        self.max_payload = max_payload
+        self.ser: serial.Serial = serial.Serial(
+            port=port,
+            baudrate=baud,
+            bytesize=8,
+            parity="N",
+            stopbits=1,
+            timeout=0.25,
+            write_timeout=1,
+        )
+        self.ser.reset_input_buffer()
+        self.ser.reset_output_buffer()
 
-def _recv_exact(ser: serial.Serial, n: int, timeout: float) -> bytes:
-    out = bytearray()
-    deadline = time.monotonic() + timeout
-    while len(out) < n:
-        left = deadline - time.monotonic()
-        if left <= 0:
-            raise TimeoutError("timeout reading frame")
-        ser.timeout = min(left, 0.25)
-        chunk = ser.read(n - len(out))
-        if chunk:
-            out.extend(chunk)
-    return bytes(out)
+    def __enter__(self) -> Fldm:
+        return self
 
-def recv_frame(
-    ser: serial.Serial,
-    timeout: float = 2.0,
-    *,
-    xor_key: int = 0,
-    max_payload: int = 4096,
-) -> FldmFrame:
-    if not 0 <= xor_key <= 0xFF:
-        raise ValueError("xor_key must fit in one byte")
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.Close()
 
-    wire_sync = _xor(SYNC, xor_key)
+    def Close(self) -> None:
+        if self.ser and self.ser.is_open:
+            self.ser.close()
 
-    # Find sync, XORed if encrypted mode is active.
-    # This will ignore any remnant bytes that are not sync words.
-    window = bytearray()
-    while True:
-        window = (window + _recv_exact(ser, 1, timeout))[-2:]
-        if bytes(window) == wire_sync:
-            break
+    def SendRaw(self, data: bytes) -> None:
+        print(f"TX {data.hex(' ')}")
+        self.ser.write(data)
+        self.ser.flush()
 
-    # Header after sync: header:u8 + body_len:u32le + verb:u8.
-    raw_head = _recv_exact(ser, 6, timeout)
-    head = _xor(raw_head, xor_key)
+    def RecvRaw(self, timeout: float | None = None) -> bytes | None:
+        start = time.monotonic()
+        end = start + (self.reply_timeout if timeout is None else timeout)
+        out = bytearray()
+        while time.monotonic() < end:
+            chunk = self.ser.read_all()
+            if chunk:
+                now = time.monotonic()
+                print(f"RX +{now - start:.3f}s {chunk.hex(' ')}")
+                out.extend(chunk)
+            else:
+                time.sleep(0.01)
+        return bytes(out) if out else None
 
-    header = head[0]
-    body_len = int.from_bytes(head[1:5], "little")
-    if body_len < 1:
-        raise ValueError(f"invalid body length {body_len}")
-    if body_len > max_payload + 1:
-        raise ValueError(f"unreasonable body length {body_len}")
+    def SendFrame(self, frame: FldmFrame) -> None:
+        self.SendRaw(frame.to_bytes(xor_key=self.xor_key))
 
-    # Remaining bytes are payload plus checksum.
-    tail = _xor(_recv_exact(ser, body_len, timeout), xor_key)
-    payload = tail[:-1]
-    checksum = tail[-1]
+    def RecvFrame(self, timeout: float | None = None) -> FldmFrame:
+        if not 0 <= self.xor_key <= 0xFF:
+            raise ValueError("xor_key must fit in one byte")
 
-    expected = sum(head + payload) & 0xFF
-    if checksum != expected:
-        raise ValueError(f"bad checksum: got 0x{checksum:02x}, expected 0x{expected:02x}")
+        timeout = self.reply_timeout if timeout is None else timeout
+        wire_sync = _xor(SYNC, self.xor_key)
 
-    verb = head[5]
-    return FldmFrame(verb=verb, payload=payload, header=header)
+        # Find sync, XORed if encrypted mode is active.
+        # This will ignore any remnant bytes that are not sync words.
+        window = bytearray()
+        while True:
+            window = (window + self._RecvExact(1, timeout))[-2:]
+            if bytes(window) == wire_sync:
+                break
 
+        # Header after sync: header:u8 + body_len:u32le + verb:u8.
+        raw_head = self._RecvExact(6, timeout)
+        head = _xor(raw_head, self.xor_key)
 
-def recv_all(ser: serial.Serial, timeout: float) -> bytes | None:
-    start = time.monotonic()
-    end = start + timeout
-    out = bytearray()
-    while time.monotonic() < end:
-        chunk = ser.read_all()
-        if chunk:
-            now = time.monotonic()
-            print(f"RX +{now - start:.3f}s {chunk.hex(' ')}")
-            out.extend(chunk)
-        else:
-            time.sleep(0.01)
-    return bytes(out) if out else None
+        header = head[0]
+        body_len = int.from_bytes(head[1:5], "little")
+        if body_len < 1:
+            raise ValueError(f"invalid body length {body_len}")
+        if body_len > self.max_payload + 1:
+            raise ValueError(f"unreasonable body length {body_len}")
+
+        # Remaining bytes are payload plus checksum.
+        tail = _xor(self._RecvExact(body_len, timeout), self.xor_key)
+        payload = tail[:-1]
+        checksum = tail[-1]
+
+        expected = sum(head + payload) & 0xFF
+        if checksum != expected:
+            raise ValueError(f"bad checksum: got 0x{checksum:02x}, expected 0x{expected:02x}")
+
+        verb = head[5]
+        return FldmFrame(verb=verb, payload=payload, header=header)
+
+    def _RecvExact(self, n: int, timeout: float) -> bytes:
+        out = bytearray()
+        deadline = time.monotonic() + timeout
+        while len(out) < n:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("timeout reading frame")
+            self.ser.timeout = min(left, 0.25)
+            chunk = self.ser.read(n - len(out))
+            if chunk:
+                out.extend(chunk)
+        return bytes(out)
+
+    def SendPacket(self, verb: int, payload: bytes = b"", *, header: int = 0) -> None:
+        self.SendFrame(FldmFrame(verb=verb, payload=payload, header=header))
+
+    def Unlock(self, timeout: float = 1.0) -> bytes | None:
+        self.SendRaw(MAGIC)
+        return self.RecvRaw(timeout)
+
+    def StartProgramming(self) -> None:
+        # The one-byte payload must be zero; any other value errors in firmware.
+        self.SendPacket(0x30, b"\x00")
+
+    def StartSession(self) -> None:
+        # Starts the firmware watchdog timer; later commands feed it.
+        self.SendPacket(0xA0)
+
+    def QueryStatus(self) -> FldmFrame:
+        self.SendPacket(0x31)
+        return self.RecvFrame()
+
+    def Complete(self, code: bytes = b"\x00\x00") -> None:
+        if len(code) != 2:
+            raise ValueError("complete code must be two bytes")
+        self.SendPacket(0x50, code)
 
 # def extract_script(exe: Path) -> list[str]:
 #     pe = dnfile.dnPE(str(exe))
@@ -140,59 +201,37 @@ def recv_all(ser: serial.Serial, timeout: float) -> bytes | None:
 #     raise RuntimeError("resource TH-D74_Firm_E.txt not found")
 
 def run(port: str, baud: int, reply_timeout: float = 2.0):
-    ser: serial.Serial = serial.Serial(port=port, baudrate=baud, bytesize=8, parity="N", stopbits=1, timeout=0.25, write_timeout=1)
-    ser.reset_input_buffer()
-    ser.reset_output_buffer()
+    with Fldm(port, baud=baud, reply_timeout=reply_timeout) as f:
+        # Start unencrypted program mode.
+        print("# Starting unencrypted program mode.")
+        reply = f.Unlock()
+        print(f"RX {reply.hex(' ') if reply else None}")
 
-    # Start unencrypted program mode.
-    print("# Starting unencrypted program mode.")
-    send(ser, MAGIC)
-    # reply = ser.read_all()
-    reply = recv_all(ser, 1) # takes slightly longer at about 0.1s
-    print(f"RX {reply.hex(' ') if reply else None}")
+        time.sleep(0.250)
 
-    time.sleep(0.250)
+        print("# Send start-program command.")
+        f.StartProgramming()
+        reply = f.RecvRaw(0.250)
+        print(f"RX {reply.hex(' ') if reply else None}")
 
-    print("# Send start-program command.")
-    # The 1 byte payload must be 0, any other value will trigger an error in firmware.
-    start_program = FldmFrame(verb=0x30, payload=b"\x00")
-    send_frame(ser, start_program)
-    reply = recv_frame(ser, reply_timeout)
-    # maybe_recv_reply(ser, True, reply_timeout)
-    reply = recv_all(ser, 0.250)
-    print(f"RX {reply.hex(' ') if reply else None}")
+        time.sleep(0.250)
 
-    time.sleep(0.250)
+        print("# Send token/session command.")
+        f.StartSession()
+        reply = f.RecvRaw(0.250)
+        print(f"RX {reply.hex(' ') if reply else None}")
 
-    # This starts a watchdog timer in firmware for 5 seconds.
-    # It feeds the watchdog on each subsequent programmer command, but if 5
-    # seconds is reach, it will error out the programming and show "Error\nData Error!!"
-    print("# Send token/session command.")
-    token = FldmFrame(verb=0xA0)
-    send_frame(ser, token)
-    # maybe_recv_reply(ser, True, reply_timeout)
-    reply = recv_all(ser, 0.250)
-    print(f"RX {reply.hex(' ') if reply else None}")
+        time.sleep(0.250)
+        print("# Send status query command.")
+        f.SendPacket(0x31)
+        reply = f.RecvRaw(0.250)
+        print(f"RX {reply.hex(' ') if reply else None}")
 
-    time.sleep(0.250)
-    print("# Send status query command.")
-    status_query = FldmFrame(verb=0x31)
-    send_frame(ser, status_query)
-    # maybe_recv_reply(ser, True, reply_timeout)
-    reply = recv_all(ser, 0.250)
-    print(f"RX {reply.hex(' ') if reply else None}")
-
-    time.sleep(0.250)
-    print("# Send complete command.")
-    # This 2 byte completion code payload is not used in firmware and can be anything.
-    # complete = make_frame(0x50, b'\xB6\xCD')
-    complete = FldmFrame(verb=0x50, payload=b'\x00\x00')
-    send_frame(ser, complete)
-    reply = recv_all(ser, 0.250)
-    print(f"RX {reply.hex(' ') if reply else None}")
-
-    if ser:
-        ser.close()
+        time.sleep(0.250)
+        print("# Send complete command.")
+        f.Complete()
+        reply = f.RecvRaw(0.250)
+        print(f"RX {reply.hex(' ') if reply else None}")
 
 def main():
     ap = argparse.ArgumentParser()
