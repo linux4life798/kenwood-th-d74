@@ -4,4 +4,6 @@ version = "0.1.0"
 description = "Firmware update tool for Kenwood TH-D74 radio"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "pyserial>=3.5",
+]
