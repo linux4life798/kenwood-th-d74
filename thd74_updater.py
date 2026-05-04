@@ -38,7 +38,7 @@ VERB_ERROR_CODES = {
     0x01: "unsupported command",
     0x02: "invalid start-program payload",
     0x03: "data packet/write rejected",
-    0x04: "command already active",
+    0x04: "command already active", # Busy doing flash operation.
 }
 
 DEFAULT_COMPLETE_CODE = 0xBC15
@@ -776,19 +776,19 @@ class Fldm:
     def SetupSegment(
         self,
         descriptor: SegmentDescriptor,
-        *,
-        timeout: float | None = None,
     ) -> SegmentSetupResult:
         """Prepare one segment and learn whether it already matches flash.
 
         Args:
             descriptor: Segment metadata and validation information.
-            timeout: Optional response timeout.
 
         Returns:
             Parsed setup result. `current_matches` means the segment can be
             skipped by host policy; `update_required` means write the segment.
         """
+        # Add reply_timeout as host-side margin; callers can increase it for
+        # unknown circumstances.
+        timeout = descriptor.checksum_wait_seconds + self.reply_timeout
         frame = self._SendAndExpectReplyFrame(
             CMD_SEGMENT_SETUP,
             descriptor.to_payload(),
@@ -797,16 +797,19 @@ class Fldm:
         )
         return SegmentSetupResult(frame.payload[0])
 
-    def BeginTransfer(self, timeout: float | None = None) -> FldmFrame:
+    def BeginTransfer(self, descriptor: SegmentDescriptor) -> FldmFrame:
         """Erase the active segment and wait until it is ready for data.
 
         Args:
-            timeout: Optional timeout for each received frame.
+            descriptor: Active segment metadata that provides the erase wait.
 
         Returns:
             The acknowledged loader response after erase completion.
         """
         self.SendPacket(CMD_BEGIN_TRANSFER)
+        # Add reply_timeout as host-side margin; callers can increase it for
+        # unknown circumstances.
+        timeout = descriptor.erase_wait_seconds + self.reply_timeout
         frame = self._RecvUntilNotBusy(timeout=timeout)
         return self._ExpectOk(frame)
 
@@ -845,16 +848,19 @@ class Fldm:
         """
         return self._SendAndExpectOk(CMD_TRANSFER_END, timeout=timeout)
 
-    def VerifySegmentDone(self, timeout: float | None = None) -> SegmentVerifyResult:
+    def VerifySegmentDone(self, descriptor: SegmentDescriptor) -> SegmentVerifyResult:
         """Ask the loader to verify the programmed segment contents.
 
         Args:
-            timeout: Optional response timeout.
+            descriptor: Active segment metadata that provides the checksum wait.
 
         Returns:
             Parsed verification result. `verified` must be true for a successful
             updater flow.
         """
+        # Add reply_timeout as host-side margin; callers can increase it for
+        # unknown circumstances.
+        timeout = descriptor.checksum_wait_seconds + self.reply_timeout
         frame = self._SendAndExpectReplyFrame(
             CMD_SEGMENT_DONE,
             payload_len=1,
@@ -896,7 +902,6 @@ class Fldm:
         *,
         skip_if_current: bool = True,
         chunk_size: int = DEFAULT_DATA_CHUNK_SIZE,
-        timeout: float | None = None,
     ) -> SegmentVerifyResult | SegmentSetupResult:
         """Run the standard setup, erase, write, end, and verify flow.
 
@@ -906,7 +911,6 @@ class Fldm:
             skip_if_current: When true, return after setup if current flash
                 already matches the descriptor.
             chunk_size: Maximum data bytes per transfer chunk.
-            timeout: Optional timeout for loader responses.
 
         Returns:
             `SegmentSetupResult` when skipped, otherwise `SegmentVerifyResult`.
@@ -927,17 +931,15 @@ class Fldm:
                 f"{descriptor.data_length}"
             )
 
-        setup = self.SetupSegment(descriptor, timeout=timeout)
+        setup = self.SetupSegment(descriptor)
         if setup.current_matches and skip_if_current:
             return setup
 
-        self.BeginTransfer(timeout=timeout)
+        self.BeginTransfer(descriptor)
         for offset in range(0, len(data), chunk_size):
-            self.SendDataPacket(
-                offset, data[offset : offset + chunk_size], timeout=timeout
-            )
-        self.EndTransfer(timeout=timeout)
-        verify = self.VerifySegmentDone(timeout=timeout)
+            self.SendDataPacket(offset, data[offset : offset + chunk_size])
+        self.EndTransfer()
+        verify = self.VerifySegmentDone(descriptor)
         if not verify.verified:
             raise RuntimeError("segment verification failed")
         return verify
