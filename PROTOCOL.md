@@ -1,6 +1,11 @@
 # TH-D74 FLDM Serial Protocol
 
-All byte values are hex unless stated otherwise.
+This document describes the firmware update protocol implemented by the TH-D74
+firmware FLDM loader. It is intentionally written as a host-side implementation
+guide.
+
+*All byte values are hex unless stated otherwise. Multi-byte integer fields are
+little-endian unless stated otherwise.*
 
 ## 1) Unlock the Loader
 
@@ -13,11 +18,16 @@ Encrypted: xx xx 54 68 64 37 34 74 77 yy zz  "..Thd74tw.."
 
 * **Cleartext** unlock checks the first seven bytes for `FPROMOD`; send exactly
   those seven bytes. Communication after this unlock is not obfuscated,
-  effectively XOR key `0x00`.
+  effectively XOR key `00`.
 * **Encrypted** unlock must be 11 bytes. The firmware checks bytes `2..8` for
   `Thd74tw`; the two `xx` bytes are ignored. `yy` and `zz` are byte values used
-  to derive the XOR key: `((-(yy + zz)) ^ 0xb8) & 0xff`. If that result is
-  `0x00`, the firmware uses `0x74`.
+  to derive the XOR key as follows:
+
+  ```python
+  xor_key = ((-(yy + zz)) ^ 0xb8) & 0xff
+  if xor_key == 0:
+      xor_key = 0x74
+  ```
 
 On accepted unlock, the firmware emits two separate raw one-byte replies:
 
