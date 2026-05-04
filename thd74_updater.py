@@ -442,6 +442,7 @@ class Fldm:
         reply_timeout: float = 2.0,
         xor_key: int = 0,
         max_payload: int = 4096,
+        verbose: bool = False,
     ) -> None:
         """Open a serial connection to the FLDM loader.
 
@@ -455,6 +456,7 @@ class Fldm:
                 declared by the segment descriptor.
             xor_key: Initial XOR key. Use zero for cleartext unlock.
             max_payload: Maximum accepted response payload length.
+            verbose: Print raw TX/RX bytes.
         """
         _validate_uint("xor_key", xor_key, 8)
         self.baud_mode = FldmBaudMode.from_baud(baud)
@@ -462,6 +464,7 @@ class Fldm:
         self.reply_timeout = reply_timeout
         self.xor_key = xor_key
         self.max_payload = max_payload
+        self.verbose = verbose
         self.ser: serial.Serial = serial.Serial(
             port=port,
             baudrate=self.baud_mode.baud,
@@ -516,7 +519,8 @@ class Fldm:
         Args:
             data: Bytes to write without FLDM framing.
         """
-        print(f"TX {data.hex(' ')}")
+        if self.verbose:
+            print(f"TX {data.hex(' ')}")
         self.ser.write(data)
         self.ser.flush()
 
@@ -536,7 +540,8 @@ class Fldm:
             chunk = self.ser.read_all()
             if chunk:
                 now = time.monotonic()
-                print(f"RX +{now - start:.3f}s {chunk.hex(' ')}")
+                if self.verbose:
+                    print(f"RX +{now - start:.3f}s {chunk.hex(' ')}")
                 out.extend(chunk)
             else:
                 time.sleep(0.01)
@@ -1070,9 +1075,15 @@ class Fldm:
             )
 
 
-def run(port: str, baud: int, reply_timeout: float = 2.0) -> None:
+def run(
+    port: str,
+    baud: int,
+    reply_timeout: float = 2.0,
+    *,
+    verbose: bool = False,
+) -> None:
     """Run a minimal cleartext FLDM command smoke test."""
-    with Fldm(port, baud=baud, reply_timeout=reply_timeout) as f:
+    with Fldm(port, baud=baud, reply_timeout=reply_timeout, verbose=verbose) as f:
         print("# Starting unencrypted program mode.")
         f.Unlock()
 
@@ -1105,9 +1116,12 @@ def main() -> None:
     ap.add_argument("--port", default="/dev/ttyACM0")
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--reply-timeout", type=float, default=2.0)
+    ap.add_argument(
+        "-v", "--verbose", action="store_true", help="print raw TX/RX bytes"
+    )
     a = ap.parse_args()
 
-    run(a.port, a.baud, a.reply_timeout)
+    run(a.port, a.baud, a.reply_timeout, verbose=a.verbose)
 
 
 if __name__ == "__main__":
