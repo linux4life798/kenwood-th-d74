@@ -2,16 +2,111 @@
 """Serial client helpers for the TH-D74 FLDM firmware loader protocol."""
 
 from __future__ import annotations
-import argparse, time
-from types import TracebackType
-import serial
+
+import argparse
+import struct
+import time
 from dataclasses import dataclass
+from enum import Enum
+from types import TracebackType
+
+import serial
 
 SYNC = b"\xab\xab"
 MAGIC = b"FPROMOD"
 MAGIC_UNLOCK_ACK = b"\x16"
 MAGIC_MODE_OK = b"\x06"
 MAGIC_REPLY = MAGIC_UNLOCK_ACK + MAGIC_MODE_OK
+
+CMD_START_PROGRAM = 0x30
+CMD_QUERY_TARGET_PROFILE = 0x31
+CMD_BAUD_TRANSFER_MODE_SELECT = 0x33
+CMD_SEGMENT_SETUP = 0x40
+CMD_BEGIN_TRANSFER = 0x42
+CMD_DATA_PACKET = 0x43
+CMD_TRANSFER_END = 0x44
+CMD_SEGMENT_DONE = 0x45
+CMD_COMPLETE = 0x50
+CMD_START_TIMED_SESSION = 0xA0
+CMD_TARGET_UNIT = 0xA3 # Only exists in the official updater. DNE in firmware.
+
+VERB_OK = 0x06
+VERB_BUSY = 0x11
+VERB_ERROR = 0x15
+"""Followed by one-byte error code, VERB_ERROR_CODES."""
+VERB_ERROR_CODES = {
+    0x01: "unsupported command",
+    0x02: "invalid start-program payload",
+    0x03: "data packet/write rejected",
+    0x04: "command already active",
+}
+
+DEFAULT_COMPLETE_CODE = 0xBC15
+SEGMENT_DESCRIPTOR_PREFIX_SIZE = 0x34
+SEGMENT_DESCRIPTOR_SIZE = 0x58
+MAX_DATA_CHUNK_SIZE = 0x800
+DEFAULT_DATA_CHUNK_SIZE = 0x400
+
+
+class FldmBaudMode(Enum):
+    """Official TH-D74 FLDM baud/transfer-mode selections."""
+
+    # The official updater's shared baud-code helper recognizes all of the
+    # following baud rate. However, the ones that are currently uncommented
+    # are considered the active TH-D74 modes, from the `#BR` metadata. Only
+    # these modes actually provide the extra data-packet ACK policy / boolean.
+    # B600 = (600, 0x00, False)
+    # B1200 = (1200, 0x01, False)
+    # B2400 = (2400, 0x02, False)
+    # B4800 = (4800, 0x03, False)
+    # B9600 = (9600, 0x04, False)
+    # B14400 = (14400, 0x05, False)
+    # B19200 = (19200, 0x06, False)
+    # B28800 = (28800, 0x07, False)
+    # B38400 = (38400, 0x08, False)
+    B57600 = (57600, 0x09, False)
+    B115200 = (115200, 0x0A, False)
+    # B128000 = (128000, 0x0B, False)
+    # B144000 = (144000, 0x0C, False)
+    # B164571 = (164571, 0x0D, False)
+    # B192000 = (192000, 0x0E, False)
+    # B230400 = (230400, 0x0F, False)
+    # B288000 = (288000, 0x10, False)
+    # B384000 = (384000, 0x11, False)
+    B576000 = (576000, 0x12, True)
+    # Mode code 0x13 was not present in the updater's generic mapping, but it
+    # would probably be 768000.
+    B1152000 = (1152000, 0x14, True)
+
+    def __init__(self, baud: int, baud_code: int, ack_each_data_packet: bool) -> None:
+        """Store one `#BR` table entry from the official updater metadata.
+
+        Args:
+            baud: Real host serial baud rate value.
+            baud_code: The smaller code used to represent the baud rate.
+            ack_each_data_packet: Whether accepted data transfer packets are ACKed.
+        """
+        self.baud = baud
+        self.mode_code = baud_code
+        self.ack_each_data_packet = ack_each_data_packet
+
+    @classmethod
+    def from_baud(cls, baud: int) -> FldmBaudMode:
+        """Return the official FLDM mode for a baud rate.
+
+        Args:
+            baud: Host serial baud rate/CDC line-coding value.
+
+        Returns:
+            Matching FLDM baud mode.
+
+        Raises:
+            ValueError: If the baud rate is not present in the updater metadata.
+        """
+        for mode in cls:
+            if mode.baud == baud:
+                return mode
+        raise ValueError(f"unsupported TH-D74 FLDM baud rate {baud}")
 
 
 def _xor(data: bytes, key: int) -> bytes:
@@ -42,6 +137,27 @@ def _validate_uint(name: str, value: int, bits: int) -> None:
         raise ValueError("bits must be positive")
     if not 0 <= value < (1 << bits):
         raise ValueError(f"{name} must fit in uint{bits}")
+
+
+def FldmSum16(data: bytes) -> int:
+    """Calculate the FLDM additive halfword sum used for segment verification.
+
+    Use this when preparing `SegmentDescriptor.expected_after_checksum` from
+    incoming firmware bytes, or `SegmentDescriptor.expected_before_checksum`
+    when you have bytes for the expected pre-write flash contents.
+
+    Args:
+        data: Bytes to sum as little-endian 16-bit words. An odd trailing byte is
+            ignored, matching the firmware implementation.
+
+    Returns:
+        The low 16 bits of the additive halfword sum.
+    """
+    total = 0
+    data = bytes(data)
+    for offset in range(0, len(data) & ~1, 2):
+        total = (total + int.from_bytes(data[offset : offset + 2], "little")) & 0xFFFF
+    return total
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +214,223 @@ class FldmFrame:
         return _xor(frame, xor_key)
 
 
+@dataclass(frozen=True, slots=True)
+class FldmTargetProfile:
+    """Loader target profile returned before segment programming starts.
+
+    Attributes:
+        target_variant_mask: Target variant bits selected by the loader.
+        loader_profile_mask: Additional loader profile bits. This firmware
+            initializes the value to 2 and only returns it in this response.
+        status_code: Trailing status byte. This firmware writes zero.
+    """
+
+    target_variant_mask: int
+    loader_profile_mask: int
+    status_code: int
+
+    @classmethod
+    def from_payload(cls, payload: bytes) -> FldmTargetProfile:
+        """Decode the loader's target-profile payload.
+
+        Args:
+            payload: The 17-byte payload returned by the loader.
+
+        Returns:
+            Parsed target-profile values.
+
+        Raises:
+            ValueError: If the payload has the wrong length.
+        """
+        if len(payload) != 17:
+            raise ValueError(
+                f"target profile payload must be 17 bytes, got {len(payload)}"
+            )
+        return cls(
+            target_variant_mask=int.from_bytes(payload[0:8], "little"),
+            loader_profile_mask=int.from_bytes(payload[8:16], "little"),
+            status_code=payload[16],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentDescriptor:
+    """Description of one flash region to validate, erase, and program.
+
+    The loader consumes the updater's `DataBlockInfo` prefix followed by the
+    optional expected final version string. The field order matches the
+    official updater's marshaled structure.
+
+    Attributes:
+        flash_start_addr: Memory-mapped flash address, usually
+            `0x60000000 + offset`.
+        data_length: Total number of data bytes expected for the segment.
+        erase_length: Number of bytes to erase from `flash_start_addr`.
+        allowed_target_variant_mask: Target compatibility mask from the updater
+            metadata `TT` field.
+        erase_wait_seconds: Segment erase wait time in seconds.
+        expected_before_checksum: Halfword checksum expected from current flash
+            before writing. If the final-version marker matches during setup,
+            the firmware calculates the checksum range from current flash and
+            compares it with this value before returning the setup decision.
+        expected_after_checksum: Halfword checksum expected after writing. The
+            firmware calculates the same checksum range after transfer
+            completion and compares it with this value for final verification.
+            This is not assumed to equal `expected_before_checksum`; official
+            updater metadata can and does provide different values.
+        checksum_start_offset: Offset from `flash_start_addr` for the checksum
+            range.
+        checksum_length: Number of bytes in the checksum range.
+        checksum_wait_seconds: Final checksum wait time in seconds.
+        final_version_offset: Offset from `flash_start_addr` where this version
+            string should reside after programming. Setup uses the same location
+            to decide whether current flash already contains the requested
+            version.
+        expected_final_version_string: Version text from the updater metadata.
+            During setup, the firmware treats this as an already-installed
+            marker: if the bytes at `flash_start_addr + final_version_offset`
+            and the before-write checksum both match, the segment can be
+            skipped. The handheld also displays this string during the update.
+    """
+
+    flash_start_addr: int
+    data_length: int
+    erase_length: int
+    expected_before_checksum: int
+    expected_after_checksum: int
+    checksum_start_offset: int
+    checksum_length: int
+    final_version_offset: int
+    expected_final_version_string: bytes = b""
+    allowed_target_variant_mask: int = 0x0F
+    erase_wait_seconds: int = 0
+    checksum_wait_seconds: int = 0x0A
+
+    def __post_init__(self) -> None:
+        """Validate fixed-width fields and normalize the final version string."""
+        for name in (
+            "flash_start_addr",
+            "data_length",
+            "erase_length",
+            "checksum_start_offset",
+            "checksum_length",
+            "final_version_offset",
+            "erase_wait_seconds",
+            "checksum_wait_seconds",
+        ):
+            _validate_uint(name, getattr(self, name), 32)
+        _validate_uint(
+            "allowed_target_variant_mask", self.allowed_target_variant_mask, 64
+        )
+        _validate_uint("expected_before_checksum", self.expected_before_checksum, 16)
+        _validate_uint("expected_after_checksum", self.expected_after_checksum, 16)
+
+        expected_final_version_string = bytes(self.expected_final_version_string)
+        max_expected_final_version_string = (
+            SEGMENT_DESCRIPTOR_SIZE - SEGMENT_DESCRIPTOR_PREFIX_SIZE
+        )
+        if len(expected_final_version_string) > max_expected_final_version_string:
+            raise ValueError(
+                "expected_final_version_string must be at most "
+                f"{max_expected_final_version_string} bytes, "
+                f"got {len(expected_final_version_string)}"
+            )
+        object.__setattr__(
+            self, "expected_final_version_string", expected_final_version_string
+        )
+
+    def to_payload(self) -> bytes:
+        """Serialize this descriptor into the loader's setup payload.
+
+        Returns:
+            The descriptor prefix plus its expected final version string.
+        """
+        descriptor = struct.pack(
+            "<4IQIHH5I",
+            self.flash_start_addr,
+            self.data_length,
+            self.erase_length,
+            0,
+            self.allowed_target_variant_mask,
+            self.erase_wait_seconds,
+            self.expected_before_checksum,
+            self.expected_after_checksum,
+            self.checksum_start_offset,
+            self.checksum_length,
+            self.checksum_wait_seconds,
+            self.final_version_offset,
+            len(self.expected_final_version_string),
+        )
+        return descriptor + self.expected_final_version_string
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentSetupResult:
+    """Decision returned after the loader checks the target segment.
+
+    Attributes:
+        code: One-byte firmware result. `0` means current flash matched the
+            descriptor checks; `1` means update required or setup check failed.
+    """
+
+    code: int
+
+    def __post_init__(self) -> None:
+        """Validate the one-byte setup result code."""
+        _validate_uint("code", self.code, 8)
+        if self.code not in (0, 1):
+            raise ValueError(f"unexpected segment setup result 0x{self.code:02x}")
+
+    @property
+    def current_matches(self) -> bool:
+        """Return true when the current flash already matches the descriptor."""
+        return self.code == 0
+
+    @property
+    def update_required(self) -> bool:
+        """Return true when the host should write the segment."""
+        return self.code == 1
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentVerifyResult:
+    """Result of the loader's final segment verification pass.
+
+    Attributes:
+        code: One-byte firmware result. `0` means final verification succeeded;
+            `1` means final verification failed.
+    """
+
+    code: int
+
+    def __post_init__(self) -> None:
+        """Validate the one-byte final verification result code."""
+        _validate_uint("code", self.code, 8)
+        if self.code not in (0, 1):
+            raise ValueError(f"unexpected segment verify result 0x{self.code:02x}")
+
+    @property
+    def verified(self) -> bool:
+        """Return true when the segment final sum matched."""
+        return self.code == 0
+
+
+class FldmCommandError(RuntimeError):
+    """Raised when the loader returns an error frame (`0x15`)."""
+
+    def __init__(self, code: int, frame: FldmFrame) -> None:
+        """Create an exception for a firmware error response.
+
+        Args:
+            code: First payload byte from the error response.
+            frame: Full error response frame.
+        """
+        self.code = code
+        self.frame = frame
+        description = VERB_ERROR_CODES.get(code, "unknown error")
+        super().__init__(f"FLDM error 0x{code:02x}: {description}")
+
+
 class Fldm:
     """Serial client for the TH-D74 FLDM firmware loader."""
 
@@ -114,19 +447,22 @@ class Fldm:
 
         Args:
             port: Serial device path.
-            baud: Serial baud rate.
+            baud: Host serial baud rate/CDC line-coding value. The USB CDC
+                loader does not use this to change firmware transport speed;
+                command `0x33` records the derived baud-mode code.
             reply_timeout: Default timeout for framed replies.
             xor_key: Initial XOR key. Use zero for cleartext unlock.
             max_payload: Maximum accepted response payload length.
         """
         _validate_uint("xor_key", xor_key, 8)
+        self.baud_mode = FldmBaudMode.from_baud(baud)
 
         self.reply_timeout = reply_timeout
         self.xor_key = xor_key
         self.max_payload = max_payload
         self.ser: serial.Serial = serial.Serial(
             port=port,
-            baudrate=baud,
+            baudrate=self.baud_mode.baud,
             bytesize=8,
             parity="N",
             stopbits=1,
@@ -148,6 +484,24 @@ class Fldm:
     ) -> None:
         """Close the serial connection on context-manager exit."""
         self.Close()
+
+    @staticmethod
+    def CalculateXorKey(magic: bytes) -> int:
+        """Calculate the keyed unlock XOR value from an 11-byte magic packet.
+
+        Args:
+            magic: Full keyed unlock packet. Bytes `9` and `10` are used.
+
+        Returns:
+            The XOR key used for framed traffic.
+
+        Raises:
+            ValueError: If `magic` is shorter than 11 bytes.
+        """
+        if len(magic) < 11:
+            raise ValueError("keyed unlock magic must contain at least 11 bytes")
+        key = ((-(magic[9] + magic[10])) ^ 0xB8) & 0xFF
+        return 0x74 if key == 0 else key
 
     def Close(self) -> None:
         """Close the serial connection."""
@@ -242,8 +596,7 @@ class Fldm:
                 f"bad checksum: got 0x{checksum:02x}, expected 0x{expected:02x}"
             )
 
-        verb = head[5]
-        return FldmFrame(verb=verb, payload=payload, header=header)
+        return FldmFrame(verb=head[5], payload=payload, header=header)
 
     def _RecvExact(self, n: int, timeout: float) -> bytes:
         """Read an exact byte count from the serial port.
@@ -290,6 +643,333 @@ class Fldm:
             RuntimeError: If the raw unlock replies are not `0x16` then `0x06`.
         """
         self.SendRaw(MAGIC)
+        self._ReadUnlockReplies(timeout)
+        self.xor_key = 0
+
+    def UnlockKeyed(self, magic: bytes, timeout: float = 1.0) -> int:
+        """Enter keyed FLDM programming mode.
+
+        Args:
+            magic: Full 11-byte keyed unlock packet.
+            timeout: Timeout for each raw unlock response byte.
+
+        Returns:
+            The XOR key calculated from `magic` and stored on this client.
+
+        Raises:
+            RuntimeError: If the raw unlock replies are not `0x16` then `0x06`.
+            ValueError: If `magic` is not an 11-byte keyed unlock packet.
+        """
+        magic = bytes(magic)
+        if len(magic) != 11:
+            raise ValueError("keyed unlock magic must be exactly 11 bytes")
+        if magic[2:9] != b"Thd74tw":
+            raise ValueError('keyed unlock magic must contain b"Thd74tw" at bytes 2..8')
+
+        key = self.CalculateXorKey(magic)
+        self.SendRaw(magic)
+        self._ReadUnlockReplies(timeout)
+        self.xor_key = key
+        return key
+
+    def StartProgramming(self, timeout: float | None = None) -> FldmFrame:
+        """Put the loader into its active programming state.
+
+        The handheld display will start flashing the "PROGRAM" message.
+
+        Args:
+            timeout: Optional response timeout.
+
+        Returns:
+            The acknowledged loader response.
+        """
+        return self._SendAndExpectOk(CMD_START_PROGRAM, b"\x00", timeout=timeout)
+
+    def SelectTargetUnit(
+        self,
+        target_unit: int = 1,
+        *,
+        timeout: float | None = None,
+    ) -> FldmFrame:
+        """Select the updater target profile before starting a session.
+
+        This is unsupported on the TH-D74 firmware.
+
+        Args:
+            target_unit: Target unit value from the updater metadata.
+            timeout: Optional response timeout.
+
+        Returns:
+            The acknowledged loader response.
+        """
+        _validate_uint("target_unit", target_unit, 32)
+        return self._SendAndExpectOk(
+            CMD_TARGET_UNIT,
+            target_unit.to_bytes(4, "little"),
+            timeout=timeout,
+        )
+
+    def StartTimedSession(self, timeout: float | None = None) -> FldmFrame:
+        """Start the loader's timed programming session.
+
+        This enables the loader timeout window used during firmware update
+        traffic. It does not authenticate the host or exchange a token.
+
+        Args:
+            timeout: Optional response timeout.
+
+        Returns:
+            The acknowledged loader response.
+        """
+        return self._SendAndExpectOk(CMD_START_TIMED_SESSION, timeout=timeout)
+
+    def QueryTargetProfile(self, timeout: float | None = None) -> FldmTargetProfile:
+        """Read the loader's target/profile compatibility bits.
+
+        Args:
+            timeout: Optional response timeout.
+
+        Returns:
+            Parsed loader target-profile fields.
+        """
+        frame = self._SendAndExpectReplyFrame(
+            CMD_QUERY_TARGET_PROFILE,
+            timeout=timeout,
+        )
+        return FldmTargetProfile.from_payload(frame.payload)
+
+    def SetBaudBaudTransferMode(
+        self,
+        *,
+        timeout: float | None = None,
+    ) -> FldmFrame:
+        """Apply this client's configured baud transfer policy to the loader.
+
+        This step tells the loader which official updater baud rate is in use
+        and whether accepted data chunks should be acknowledged. On the USB CDC
+        loader, the baud code is recorded as protocol metadata; it does not
+        reconfigure the transport speed.
+
+        In the official updater, this is actually called rather late, just
+        before the SetupSegment command.
+
+        Args:
+            timeout: Optional response timeout.
+
+        Returns:
+            The acknowledged loader response.
+        """
+        mode = self.baud_mode
+        payload = bytes(
+            [
+                mode.mode_code,
+                1 if mode.ack_each_data_packet else 0,
+            ]
+        )
+        frame = self._SendAndExpectOk(
+            CMD_BAUD_TRANSFER_MODE_SELECT,
+            payload,
+            timeout=timeout,
+        )
+        return frame
+
+    def SetupSegment(
+        self,
+        descriptor: SegmentDescriptor,
+        *,
+        timeout: float | None = None,
+    ) -> SegmentSetupResult:
+        """Prepare one segment and learn whether it already matches flash.
+
+        Args:
+            descriptor: Segment metadata and validation information.
+            timeout: Optional response timeout.
+
+        Returns:
+            Parsed setup result. `current_matches` means the segment can be
+            skipped by host policy; `update_required` means write the segment.
+        """
+        frame = self._SendAndExpectReplyFrame(
+            CMD_SEGMENT_SETUP,
+            descriptor.to_payload(),
+            payload_len=1,
+            timeout=timeout,
+        )
+        return SegmentSetupResult(frame.payload[0])
+
+    def BeginTransfer(self, timeout: float | None = None) -> FldmFrame:
+        """Erase the active segment and wait until it is ready for data.
+
+        Args:
+            timeout: Optional timeout for each received frame.
+
+        Returns:
+            The acknowledged loader response after erase completion.
+        """
+        self.SendPacket(CMD_BEGIN_TRANSFER)
+        frame = self._RecvUntilNotBusy(timeout=timeout)
+        return self._ExpectOk(frame)
+
+    def SendDataPacket(
+        self,
+        segment_offset: int,
+        data: bytes,
+        *,
+        timeout: float | None = None,
+    ) -> FldmFrame | None:
+        """Write one chunk into the active segment transfer buffer.
+
+        Args:
+            segment_offset: Offset from the active descriptor base address.
+            data: Chunk bytes. Keep chunks at or below `0x800` bytes.
+            timeout: Optional response timeout when waiting for ACK.
+
+        Returns:
+            The acknowledged loader response when ACKs are enabled, otherwise `None`.
+        """
+        payload = self.BuildDataPacket(segment_offset, data)
+        self.SendPacket(CMD_DATA_PACKET, payload)
+
+        if self.baud_mode.ack_each_data_packet:
+            return self._ExpectOk(self._RecvCommandFrame(timeout=timeout))
+        return None
+
+    def EndTransfer(self, timeout: float | None = None) -> FldmFrame:
+        """Tell the loader that all data for the active segment has been sent.
+
+        Args:
+            timeout: Optional response timeout.
+
+        Returns:
+            The acknowledged loader response.
+        """
+        return self._SendAndExpectOk(CMD_TRANSFER_END, timeout=timeout)
+
+    def VerifySegmentDone(self, timeout: float | None = None) -> SegmentVerifyResult:
+        """Ask the loader to verify the programmed segment contents.
+
+        Args:
+            timeout: Optional response timeout.
+
+        Returns:
+            Parsed verification result. `verified` must be true for a successful
+            updater flow.
+        """
+        frame = self._SendAndExpectReplyFrame(
+            CMD_SEGMENT_DONE,
+            payload_len=1,
+            timeout=timeout,
+        )
+        return SegmentVerifyResult(frame.payload[0])
+
+    def Complete(
+        self,
+        code: int | bytes = DEFAULT_COMPLETE_CODE,
+        *,
+        timeout: float | None = None,
+    ) -> FldmFrame:
+        """Finish the programming session and let the device leave loader mode.
+
+        The handheld display will show the "Complete" message.
+
+        Args:
+            code: Four-byte completion code from the updater metadata, or an
+                integer encoded little-endian.
+            timeout: Optional response timeout.
+
+        Returns:
+            The acknowledged loader response.
+        """
+        if isinstance(code, int):
+            _validate_uint("code", code, 32)
+            payload = code.to_bytes(4, "little")
+        else:
+            payload = bytes(code)
+            if len(payload) != 4:
+                raise ValueError("complete code must be four bytes")
+        return self._SendAndExpectOk(CMD_COMPLETE, payload, timeout=timeout)
+
+    def ProgramSegment(
+        self,
+        descriptor: SegmentDescriptor,
+        data: bytes,
+        *,
+        skip_if_current: bool = True,
+        chunk_size: int = DEFAULT_DATA_CHUNK_SIZE,
+        timeout: float | None = None,
+    ) -> SegmentVerifyResult | SegmentSetupResult:
+        """Run the standard setup, erase, write, end, and verify flow.
+
+        Args:
+            descriptor: Segment metadata and validation information.
+            data: Complete segment data to write.
+            skip_if_current: When true, return after setup if current flash
+                already matches the descriptor.
+            chunk_size: Maximum data bytes per transfer chunk.
+            timeout: Optional timeout for loader responses.
+
+        Returns:
+            `SegmentSetupResult` when skipped, otherwise `SegmentVerifyResult`.
+
+        Raises:
+            RuntimeError: If final verification returns failure.
+        """
+        if chunk_size <= 0 or chunk_size > MAX_DATA_CHUNK_SIZE:
+            raise ValueError(f"chunk_size must be 1..{MAX_DATA_CHUNK_SIZE}")
+        if not self.baud_mode.ack_each_data_packet:
+            raise RuntimeError(
+                "ProgramSegment requires a baud mode with data-packet ACKs enabled"
+            )
+        data = bytes(data)
+        if len(data) != descriptor.data_length:
+            raise ValueError(
+                f"data length {len(data)} does not match descriptor data_length "
+                f"{descriptor.data_length}"
+            )
+
+        setup = self.SetupSegment(descriptor, timeout=timeout)
+        if setup.current_matches and skip_if_current:
+            return setup
+
+        self.BeginTransfer(timeout=timeout)
+        for offset in range(0, len(data), chunk_size):
+            self.SendDataPacket(
+                offset, data[offset : offset + chunk_size], timeout=timeout
+            )
+        self.EndTransfer(timeout=timeout)
+        verify = self.VerifySegmentDone(timeout=timeout)
+        if not verify.verified:
+            raise RuntimeError("segment verification failed")
+        return verify
+
+    @staticmethod
+    def BuildDataPacket(segment_offset: int, data: bytes) -> bytes:
+        """Package one segment chunk in the loader's expected data layout.
+
+        Args:
+            segment_offset: Offset from the active segment base.
+            data: Non-empty data chunk, at most `0x800` bytes.
+
+        Returns:
+            Chunk payload bytes ready to frame and transmit.
+        """
+        _validate_uint("segment_offset", segment_offset, 32)
+        data = bytes(data)
+        if not data:
+            raise ValueError("data packet must not be empty")
+        if len(data) > MAX_DATA_CHUNK_SIZE:
+            raise ValueError(f"data packet must be at most {MAX_DATA_CHUNK_SIZE} bytes")
+        return struct.pack("<II", segment_offset, len(data)) + data
+
+    def _ReadUnlockReplies(self, timeout: float) -> None:
+        """Read and validate the two raw unlock response bytes.
+
+        Args:
+            timeout: Timeout for each raw byte.
+
+        Raises:
+            RuntimeError: If either unlock response byte is unexpected.
+        """
         unlock_ack = self._RecvExact(1, timeout)
         if unlock_ack != MAGIC_UNLOCK_ACK:
             raise RuntimeError(
@@ -302,52 +982,154 @@ class Fldm:
                 f"unexpected mode-change OK {mode_ok.hex(' ')}, expected {MAGIC_MODE_OK.hex(' ')}"
             )
 
-    def StartProgramming(self) -> None:
-        # The one-byte payload must be zero; any other value errors in firmware.
-        self.SendPacket(0x30, b"\x00")
+    def _SendAndExpectOk(
+        self,
+        verb: int,
+        payload: bytes = b"",
+        *,
+        timeout: float | None = None,
+    ) -> FldmFrame:
+        """Send a command and validate an empty OK response.
 
-    def StartSession(self) -> None:
-        # Starts the firmware watchdog timer; later commands feed it.
-        self.SendPacket(0xA0)
+        Args:
+            verb: Command verb.
+            payload: Command payload.
+            timeout: Optional response timeout.
 
-    def QueryStatus(self) -> FldmFrame:
-        self.SendPacket(0x31)
-        return self.RecvFrame()
+        Returns:
+            The validated OK frame.
+        """
+        self.SendPacket(verb, payload)
+        return self._ExpectOk(self._RecvCommandFrame(timeout=timeout))
 
-    def Complete(self, code: bytes = b"\x00\x00") -> None:
-        if len(code) != 2:
-            raise ValueError("complete code must be two bytes")
-        self.SendPacket(0x50, code)
+    def _SendAndExpectReplyFrame(
+        self,
+        verb: int,
+        payload: bytes = b"",
+        *,
+        payload_len: int | None = None,
+        timeout: float | None = None,
+    ) -> FldmFrame:
+        """Send a command and validate its command-specific reply frame.
+
+        Command-specific reply frames use the command verb plus one. Generic
+        status frames such as OK, BUSY, and ERROR are handled by other helpers.
+
+        Args:
+            verb: Command verb.
+            payload: Command payload.
+            payload_len: Required response payload length when provided.
+            timeout: Optional response timeout.
+
+        Returns:
+            The validated response frame.
+        """
+        self.SendPacket(verb, payload)
+        frame = self._RecvCommandFrame(timeout=timeout)
+        self._ExpectVerb(frame, verb + 1)
+        if payload_len is not None and len(frame.payload) != payload_len:
+            raise RuntimeError(
+                f"expected response payload length {payload_len}, got {len(frame.payload)}"
+            )
+        return frame
+
+    def _RecvCommandFrame(self, timeout: float | None = None) -> FldmFrame:
+        """Receive one response frame and raise on firmware error frames.
+
+        Args:
+            timeout: Optional response timeout.
+
+        Returns:
+            The decoded non-error response frame.
+
+        Raises:
+            FldmCommandError: If firmware returns response verb `0x15`.
+        """
+        frame = self.RecvFrame(timeout=timeout)
+        if frame.verb == VERB_ERROR:
+            code = frame.payload[0] if frame.payload else 0
+            raise FldmCommandError(code, frame)
+        return frame
+
+    def _RecvUntilNotBusy(self, timeout: float | None = None) -> FldmFrame:
+        """Receive frames until the loader stops reporting BUSY.
+
+        Args:
+            timeout: Optional timeout for each frame.
+
+        Returns:
+            The first non-BUSY response frame.
+
+        Raises:
+            RuntimeError: If a BUSY response unexpectedly carries payload bytes.
+        """
+        while True:
+            frame = self._RecvCommandFrame(timeout=timeout)
+            if frame.verb != VERB_BUSY:
+                return frame
+            if frame.payload:
+                raise RuntimeError("busy frame unexpectedly included payload")
+
+    def _ExpectOk(self, frame: FldmFrame) -> FldmFrame:
+        """Validate that a response frame is an empty OK frame.
+
+        Args:
+            frame: Response frame to validate.
+
+        Returns:
+            The same response frame.
+        """
+        self._ExpectVerb(frame, VERB_OK)
+        if frame.payload:
+            raise RuntimeError(
+                f"OK frame unexpectedly included {len(frame.payload)} payload bytes"
+            )
+        return frame
+
+    @staticmethod
+    def _ExpectVerb(frame: FldmFrame, expected_verb: int) -> None:
+        """Validate the response verb.
+
+        Args:
+            frame: Response frame to validate.
+            expected_verb: Required response verb.
+
+        Raises:
+            RuntimeError: If the response verb differs.
+        """
+        if frame.verb != expected_verb:
+            raise RuntimeError(
+                f"unexpected response verb 0x{frame.verb:02x}, expected 0x{expected_verb:02x}"
+            )
 
 
 def run(port: str, baud: int, reply_timeout: float = 2.0) -> None:
     """Run a minimal cleartext FLDM command smoke test."""
     with Fldm(port, baud=baud, reply_timeout=reply_timeout) as f:
-        # Start unencrypted program mode.
         print("# Starting unencrypted program mode.")
         f.Unlock()
 
-        time.sleep(0.250)
-
         print("# Send start-program command.")
-        f.StartProgramming()
-        print(f.RecvFrame())
+        print(f.StartProgramming())
+        time.sleep(2) # Show the flashing PROGRAM on display.
 
-        time.sleep(0.250)
+        # print("# Select updater target profile.")
+        # print(f.SelectTargetUnit())
 
-        print("# Send token/session command.")
-        f.StartSession()
-        print(f.RecvFrame())
+        print("# Start timed programming session.")
+        print(f.StartTimedSession())
 
-        time.sleep(0.250)
-        print("# Send status query command.")
-        f.SendPacket(0x31)
-        print(f.RecvFrame())
+        print("# Query target profile.")
+        print(f.QueryTargetProfile())
 
-        time.sleep(0.250)
+        print("# Select baud/transfer mode.")
+        print(f.SetBaudBaudTransferMode())
+
+        # TODO: Setup firmware segments.
+        # TODO: Send the firmware segments.
+
         print("# Send complete command.")
-        f.Complete()
-        print(f.RecvFrame())
+        print(f.Complete())
 
 
 def main() -> None:
