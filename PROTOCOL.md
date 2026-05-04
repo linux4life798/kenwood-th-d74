@@ -1,11 +1,16 @@
 # TH-D74 FLDM Serial Protocol
 
 This document describes the firmware update protocol implemented by the TH-D74
-firmware FLDM loader. It is intentionally written as a host-side implementation
-guide.
+firmware FLDM loader, named `EX-4420 FldmLoader`. It is intentionally written
+as a host-side implementation guide.
 
 *All byte values are hex unless stated otherwise. Multi-byte integer fields are
 little-endian unless stated otherwise.*
+
+Keywords:
+* `EX-4409 Boot Program`
+* `EX-4420 FldmLoader`
+* `EX-4409 Firmware`
 
 ## 1) Unlock the Loader
 
