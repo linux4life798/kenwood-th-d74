@@ -18,9 +18,6 @@ import serial
 
 SYNC = b"\xab\xab"
 MAGIC = b"FPROMOD"
-MAGIC_UNLOCK_ACK = b"\x16"
-MAGIC_MODE_OK = b"\x06"
-MAGIC_REPLY = MAGIC_UNLOCK_ACK + MAGIC_MODE_OK
 
 CMD_START_PROGRAM = 0x30
 CMD_QUERY_TARGET_PROFILE = 0x31
@@ -37,6 +34,7 @@ CMD_TARGET_UNIT = 0xA3  # Only exists in the official updater. DNE in firmware.
 VERB_OK = 0x06
 VERB_BUSY = 0x11
 VERB_ERROR = 0x15
+VERB_UNLOCK_ACK = 0x16
 """Followed by one-byte error code, VERB_ERROR_CODES."""
 VERB_ERROR_CODES = {
     0x01: "unsupported command",
@@ -994,18 +992,24 @@ class FLDMLoader:
             RuntimeError: If either unlock response byte is unexpected.
         """
         with self.log_rx_window():
-            unlock_ack = self._recv_exact(1, timeout)
-            if unlock_ack != MAGIC_UNLOCK_ACK:
+            # 0x16 means the ROM/loader accepted the raw unlock token and will
+            # continue the mode-entry handshake. This byte is raw/unframed and
+            # is not XORed, even when the caller used keyed unlock.
+            unlock_ack = self._recv_exact(1, timeout)[0]
+            if unlock_ack != VERB_UNLOCK_ACK:
                 raise RuntimeError(
-                    f"unexpected unlock ACK {unlock_ack.hex(' ')}, "
-                    f"expected {MAGIC_UNLOCK_ACK.hex(' ')}"
+                    f"unexpected unlock ACK 0x{unlock_ack:02x}, "
+                    f"expected 0x{VERB_UNLOCK_ACK:02x}"
                 )
 
-            mode_ok = self._recv_exact(1, timeout)
-            if mode_ok != MAGIC_MODE_OK:
+            # 0x06 is the final OK status from mode entry: the loader has
+            # entered the caller-selected programming mode and is ready for
+            # framed FLDM commands.
+            mode_ok = self._recv_exact(1, timeout)[0]
+            if mode_ok != VERB_OK:
                 raise RuntimeError(
-                    f"unexpected mode-change OK {mode_ok.hex(' ')}, "
-                    f"expected {MAGIC_MODE_OK.hex(' ')}"
+                    f"unexpected mode-change OK 0x{mode_ok:02x}, "
+                    f"expected 0x{VERB_OK:02x}"
                 )
 
     def _send_and_expect_ok(
