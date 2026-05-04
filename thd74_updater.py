@@ -32,7 +32,7 @@ CMD_TRANSFER_END = 0x44
 CMD_SEGMENT_DONE = 0x45
 CMD_COMPLETE = 0x50
 CMD_START_TIMED_SESSION = 0xA0
-CMD_TARGET_UNIT = 0xA3 # Only exists in the official updater. DNE in firmware.
+CMD_TARGET_UNIT = 0xA3  # Only exists in the official updater. DNE in firmware.
 
 VERB_OK = 0x06
 VERB_BUSY = 0x11
@@ -42,7 +42,7 @@ VERB_ERROR_CODES = {
     0x01: "unsupported command",
     0x02: "invalid start-program payload",
     0x03: "data packet/write rejected",
-    0x04: "command already active", # Busy doing flash operation.
+    0x04: "command already active",  # Busy doing flash operation.
 }
 
 DEFAULT_COMPLETE_CODE = 0xBC15
@@ -1141,7 +1141,7 @@ def run(
 
         print("# Send start-program command.")
         print(f.StartProgramming())
-        time.sleep(2) # Show the flashing PROGRAM on display.
+        time.sleep(2)  # Show the flashing PROGRAM on display.
 
         # print("# Select updater target profile.")
         # print(f.SelectTargetUnit())
