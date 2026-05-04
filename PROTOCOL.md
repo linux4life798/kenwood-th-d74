@@ -9,7 +9,7 @@ little-endian unless stated otherwise.*
 
 ## 1) Unlock the Loader
 
-Before framed commands, unlock the loader with one of these raw byte sequences:
+Before framed commands, unlock the loader with the following raw byte sequences:
 
 ```text
 Cleartext: 46 50 52 4f 4d 4f 44              "FPROMOD"
@@ -53,15 +53,15 @@ ab   ab   00 01 00 00 00 31       32
 
 *No trailing CR/LF.*
 
-Fields:
+The fields are as follows:
 
 ```text
-SYNC SYNC  fixed sync bytes: ab ab
-HH         header/reserved byte, normally 00, but this is unchecked in firmware
+SYNC SYNC  fixed sync bytes ab ab
+HH         header/reserved byte; firmware transmits 00 and receive does not validate it
 LL..LL     little-endian body length = 1 + payload length
 VV         one-byte command or response verb
 PP...      optional payload bytes
-CC         checksum: sum(HH, LL..LL, VV, PP...) & 0xff
+CC         checksum = sum(HH, LL..LL, VV, PP...) & 0xff
 ```
 
 The checksum excludes `SYNC SYNC` and excludes `CC`. Firmware-generated frames
