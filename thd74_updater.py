@@ -437,7 +437,7 @@ class FLDMCommandError(RuntimeError):
         super().__init__(f"FLDM error 0x{code:02x}: {description}")
 
 
-class FLDM:
+class FLDMLoader:
     """Serial client for the TH-D74 FLDM firmware loader."""
 
     def __init__(
@@ -486,7 +486,7 @@ class FLDM:
         self._serial_port.reset_input_buffer()
         self._serial_port.reset_output_buffer()
 
-    def __enter__(self) -> FLDM:
+    def __enter__(self) -> FLDMLoader:
         """Return this client for use as a context manager."""
         return self
 
@@ -1135,7 +1135,12 @@ def run(
     verbose: bool = False,
 ) -> None:
     """Run a minimal cleartext FLDM command smoke test."""
-    with FLDM(port, baud=baud, reply_timeout=reply_timeout, verbose=verbose) as fldm:
+    with FLDMLoader(
+        port,
+        baud=baud,
+        reply_timeout=reply_timeout,
+        verbose=verbose,
+    ) as fldm:
         print("# Starting unencrypted program mode.")
         fldm.unlock()
 
