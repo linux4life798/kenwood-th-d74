@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import struct
+import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from types import TracebackType
@@ -46,6 +50,8 @@ SEGMENT_DESCRIPTOR_PREFIX_SIZE = 0x34
 SEGMENT_DESCRIPTOR_SIZE = 0x58
 MAX_DATA_CHUNK_SIZE = 0x800
 DEFAULT_DATA_CHUNK_SIZE = 0x400
+ANSI_LIGHT_GREY = "\x1b[90m"
+ANSI_RESET = "\x1b[0m"
 
 
 class FldmBaudMode(Enum):
@@ -456,7 +462,7 @@ class Fldm:
                 declared by the segment descriptor.
             xor_key: Initial XOR key. Use zero for cleartext unlock.
             max_payload: Maximum accepted response payload length.
-            verbose: Print raw TX/RX bytes.
+            verbose: Print raw TX/RX bytes as they are written or received.
         """
         _validate_uint("xor_key", xor_key, 8)
         self.baud_mode = FldmBaudMode.from_baud(baud)
@@ -465,6 +471,9 @@ class Fldm:
         self.xor_key = xor_key
         self.max_payload = max_payload
         self.verbose = verbose
+        self._use_ansi_color = _stdout_supports_ansi_color()
+        self._rx_log_start: float | None = None
+        self._rx_log_line_open = False
         self.ser: serial.Serial = serial.Serial(
             port=port,
             baudrate=self.baud_mode.baud,
@@ -519,8 +528,7 @@ class Fldm:
         Args:
             data: Bytes to write without FLDM framing.
         """
-        if self.verbose:
-            print(f"TX {data.hex(' ')}")
+        self._LogTxBytes(data)
         self.ser.write(data)
         self.ser.flush()
 
@@ -533,19 +541,19 @@ class Fldm:
         Returns:
             Bytes read, or `None` if no bytes arrived.
         """
-        start = time.monotonic()
-        end = start + (self.reply_timeout if timeout is None else timeout)
-        out = bytearray()
-        while time.monotonic() < end:
-            chunk = self.ser.read_all()
-            if chunk:
-                now = time.monotonic()
-                if self.verbose:
-                    print(f"RX +{now - start:.3f}s {chunk.hex(' ')}")
-                out.extend(chunk)
-            else:
-                time.sleep(0.01)
-        return bytes(out) if out else None
+        with self.LogRXWindow():
+            end = time.monotonic() + (
+                self.reply_timeout if timeout is None else timeout
+            )
+            out = bytearray()
+            while time.monotonic() < end:
+                chunk = self.ser.read_all()
+                if chunk:
+                    self._LogRxBytes(chunk)
+                    out.extend(chunk)
+                else:
+                    time.sleep(0.01)
+            return bytes(out) if out else None
 
     def SendFrame(self, frame: FldmFrame) -> None:
         """Send an already constructed FLDM frame.
@@ -572,38 +580,80 @@ class Fldm:
 
         timeout = self.reply_timeout if timeout is None else timeout
         wire_sync = _xor(SYNC, self.xor_key)
+        with self.LogRXWindow():
+            # Find sync, XORed if encrypted mode is active.
+            # This will ignore any remnant bytes that are not sync words.
+            window = bytearray()
+            while True:
+                raw_byte = self._RecvExact(1, timeout)
+                window = (window + raw_byte)[-2:]
+                if bytes(window) == wire_sync:
+                    break
 
-        # Find sync, XORed if encrypted mode is active.
-        # This will ignore any remnant bytes that are not sync words.
-        window = bytearray()
-        while True:
-            window = (window + self._RecvExact(1, timeout))[-2:]
-            if bytes(window) == wire_sync:
-                break
+            # Header after sync: header:u8 + body_len:u32le + verb:u8.
+            raw_head = self._RecvExact(6, timeout)
+            head = _xor(raw_head, self.xor_key)
 
-        # Header after sync: header:u8 + body_len:u32le + verb:u8.
-        raw_head = self._RecvExact(6, timeout)
-        head = _xor(raw_head, self.xor_key)
+            header = head[0]
+            body_len = int.from_bytes(head[1:5], "little")
+            if body_len < 1:
+                raise ValueError(f"invalid body length {body_len}")
+            if body_len > self.max_payload + 1:
+                raise ValueError(f"unreasonable body length {body_len}")
 
-        header = head[0]
-        body_len = int.from_bytes(head[1:5], "little")
-        if body_len < 1:
-            raise ValueError(f"invalid body length {body_len}")
-        if body_len > self.max_payload + 1:
-            raise ValueError(f"unreasonable body length {body_len}")
+            # Remaining bytes are payload plus checksum.
+            tail = _xor(self._RecvExact(body_len, timeout), self.xor_key)
+            payload = tail[:-1]
+            checksum = tail[-1]
 
-        # Remaining bytes are payload plus checksum.
-        tail = _xor(self._RecvExact(body_len, timeout), self.xor_key)
-        payload = tail[:-1]
-        checksum = tail[-1]
+            expected = sum(head + payload) & 0xFF
+            if checksum != expected:
+                raise ValueError(
+                    f"bad checksum: got 0x{checksum:02x}, expected 0x{expected:02x}"
+                )
 
-        expected = sum(head + payload) & 0xFF
-        if checksum != expected:
-            raise ValueError(
-                f"bad checksum: got 0x{checksum:02x}, expected 0x{expected:02x}"
-            )
+            return FldmFrame(verb=head[5], payload=payload, header=header)
 
-        return FldmFrame(verb=head[5], payload=payload, header=header)
+    @contextmanager
+    def LogRXWindow(self) -> Iterator[None]:
+        """Open a verbose RX logging window for the enclosed receive work."""
+        if not self.verbose:
+            yield
+            return
+
+        self._rx_log_start = time.monotonic()
+        self._rx_log_line_open = False
+        try:
+            yield
+        finally:
+            if self._rx_log_line_open:
+                print(flush=True)
+            self._rx_log_start = None
+            self._rx_log_line_open = False
+
+    def _LogRxBytes(self, data: bytes) -> None:
+        """Print received bytes immediately inside the current RX window."""
+        if not self.verbose or not data:
+            return
+        start = self._rx_log_start
+        if start is None:
+            return
+        if not self._rx_log_line_open:
+            print("RX", end="", flush=True)
+            self._rx_log_line_open = True
+        timestamp = f"+{time.monotonic() - start:.3f}s"
+        if self._use_ansi_color:
+            timestamp = f"{ANSI_LIGHT_GREY}{timestamp}{ANSI_RESET}"
+        print(
+            f" {timestamp} {data.hex(' ')}",
+            end="",
+            flush=True,
+        )
+
+    def _LogTxBytes(self, data: bytes) -> None:
+        """Print transmitted bytes immediately."""
+        if self.verbose:
+            print(f"TX {data.hex(' ')}", flush=True)
 
     def _RecvExact(self, n: int, timeout: float) -> bytes:
         """Read an exact byte count from the serial port.
@@ -627,6 +677,7 @@ class Fldm:
             self.ser.timeout = min(left, 0.25)
             chunk = self.ser.read(n - len(out))
             if chunk:
+                self._LogRxBytes(chunk)
                 out.extend(chunk)
         return bytes(out)
 
@@ -942,17 +993,18 @@ class Fldm:
         Raises:
             RuntimeError: If either unlock response byte is unexpected.
         """
-        unlock_ack = self._RecvExact(1, timeout)
-        if unlock_ack != MAGIC_UNLOCK_ACK:
-            raise RuntimeError(
-                f"unexpected unlock ACK {unlock_ack.hex(' ')}, expected {MAGIC_UNLOCK_ACK.hex(' ')}"
-            )
+        with self.LogRXWindow():
+            unlock_ack = self._RecvExact(1, timeout)
+            if unlock_ack != MAGIC_UNLOCK_ACK:
+                raise RuntimeError(
+                    f"unexpected unlock ACK {unlock_ack.hex(' ')}, expected {MAGIC_UNLOCK_ACK.hex(' ')}"
+                )
 
-        mode_ok = self._RecvExact(1, timeout)
-        if mode_ok != MAGIC_MODE_OK:
-            raise RuntimeError(
-                f"unexpected mode-change OK {mode_ok.hex(' ')}, expected {MAGIC_MODE_OK.hex(' ')}"
-            )
+            mode_ok = self._RecvExact(1, timeout)
+            if mode_ok != MAGIC_MODE_OK:
+                raise RuntimeError(
+                    f"unexpected mode-change OK {mode_ok.hex(' ')}, expected {MAGIC_MODE_OK.hex(' ')}"
+                )
 
     def _SendAndExpectOk(
         self,
@@ -1122,6 +1174,22 @@ def main() -> None:
     a = ap.parse_args()
 
     run(a.port, a.baud, a.reply_timeout, verbose=a.verbose)
+
+
+def _stdout_supports_ansi_color() -> bool:
+    """Return true when stdout should receive ANSI color codes."""
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if not sys.stdout.isatty():
+        return False
+    if os.name != "nt":
+        return True
+    if os.environ.get("WT_SESSION") or os.environ.get("ANSICON"):
+        return True
+    if os.environ.get("ConEmuANSI", "").upper() == "ON":
+        return True
+    term = os.environ.get("TERM", "")
+    return bool(term and term.lower() != "dumb")
 
 
 if __name__ == "__main__":
