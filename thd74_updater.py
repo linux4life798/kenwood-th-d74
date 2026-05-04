@@ -997,13 +997,15 @@ class FLDMLoader:
             unlock_ack = self._recv_exact(1, timeout)
             if unlock_ack != MAGIC_UNLOCK_ACK:
                 raise RuntimeError(
-                    f"unexpected unlock ACK {unlock_ack.hex(' ')}, expected {MAGIC_UNLOCK_ACK.hex(' ')}"
+                    f"unexpected unlock ACK {unlock_ack.hex(' ')}, "
+                    f"expected {MAGIC_UNLOCK_ACK.hex(' ')}"
                 )
 
             mode_ok = self._recv_exact(1, timeout)
             if mode_ok != MAGIC_MODE_OK:
                 raise RuntimeError(
-                    f"unexpected mode-change OK {mode_ok.hex(' ')}, expected {MAGIC_MODE_OK.hex(' ')}"
+                    f"unexpected mode-change OK {mode_ok.hex(' ')}, "
+                    f"expected {MAGIC_MODE_OK.hex(' ')}"
                 )
 
     def _send_and_expect_ok(
