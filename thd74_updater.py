@@ -52,7 +52,7 @@ class FldmBaudMode(Enum):
     """Official TH-D74 FLDM baud/transfer-mode selections."""
 
     # The official updater's shared baud-code helper recognizes all of the
-    # following baud rate. However, the ones that are currently uncommented
+    # following baud rates. However, the ones that are currently uncommented
     # are considered the active TH-D74 modes, from the `#BR` metadata. Only
     # these modes actually provide the extra data-packet ACK policy / boolean.
     # B600 = (600, 0x00, False)
