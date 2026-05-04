@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import struct
 import sys
 import time
@@ -48,8 +47,6 @@ SEGMENT_DESCRIPTOR_PREFIX_SIZE = 0x34
 SEGMENT_DESCRIPTOR_SIZE = 0x58
 MAX_DATA_CHUNK_SIZE = 0x800
 DEFAULT_DATA_CHUNK_SIZE = 0x400
-_ANSI_LIGHT_GREY = "\x1b[90m"
-_ANSI_RESET = "\x1b[0m"
 
 
 class FLDMBaudMode(Enum):
@@ -469,7 +466,7 @@ class FLDMLoader:
         self.xor_key = xor_key
         self.max_payload = max_payload
         self.verbose = verbose
-        self._use_ansi_color = _stdout_supports_ansi_color()
+        self._use_ansi_color = sys.stderr.isatty()
         self._rx_log_start: float | None = None
         self._rx_log_line_open = False
         self._serial_port: serial.Serial = serial.Serial(
@@ -625,7 +622,7 @@ class FLDMLoader:
             yield
         finally:
             if self._rx_log_line_open:
-                print(flush=True)
+                print(file=sys.stderr, flush=True)
             self._rx_log_start = None
             self._rx_log_line_open = False
 
@@ -637,21 +634,24 @@ class FLDMLoader:
         if start is None:
             return
         if not self._rx_log_line_open:
-            print("RX", end="", flush=True)
+            print("RX", end="", file=sys.stderr, flush=True)
             self._rx_log_line_open = True
         timestamp = f"+{time.monotonic() - start:.3f}s"
         if self._use_ansi_color:
-            timestamp = f"{_ANSI_LIGHT_GREY}{timestamp}{_ANSI_RESET}"
+            ansi_light_grey = "\x1b[90m"
+            ansi_reset = "\x1b[0m"
+            timestamp = f"{ansi_light_grey}{timestamp}{ansi_reset}"
         print(
             f" {timestamp} {data.hex(' ')}",
             end="",
+            file=sys.stderr,
             flush=True,
         )
 
     def _log_tx_bytes(self, data: bytes) -> None:
         """Print transmitted bytes immediately."""
         if self.verbose:
-            print(f"TX {data.hex(' ')}", flush=True)
+            print(f"TX {data.hex(' ')}", file=sys.stderr, flush=True)
 
     def _recv_exact(self, n: int, timeout: float) -> bytes:
         """Read an exact byte count from the serial port.
@@ -1185,23 +1185,6 @@ def main() -> None:
     args = parser.parse_args()
 
     run(args.port, args.baud, args.reply_timeout, verbose=args.verbose)
-
-
-def _stdout_supports_ansi_color() -> bool:
-    """Return true when stdout should receive ANSI color codes."""
-    if os.environ.get("NO_COLOR") is not None:
-        return False
-    if not sys.stdout.isatty():
-        return False
-    if os.name != "nt":
-        return True
-    if os.environ.get("WT_SESSION") or os.environ.get("ANSICON"):
-        return True
-    if os.environ.get("ConEmuANSI", "").upper() == "ON":
-        return True
-    term = os.environ.get("TERM", "")
-    return bool(term and term.lower() != "dumb")
-
 
 if __name__ == "__main__":
     main()
