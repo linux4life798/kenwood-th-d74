@@ -50,11 +50,11 @@ SEGMENT_DESCRIPTOR_PREFIX_SIZE = 0x34
 SEGMENT_DESCRIPTOR_SIZE = 0x58
 MAX_DATA_CHUNK_SIZE = 0x800
 DEFAULT_DATA_CHUNK_SIZE = 0x400
-ANSI_LIGHT_GREY = "\x1b[90m"
-ANSI_RESET = "\x1b[0m"
+_ANSI_LIGHT_GREY = "\x1b[90m"
+_ANSI_RESET = "\x1b[0m"
 
 
-class FldmBaudMode(Enum):
+class FLDMBaudMode(Enum):
     """Official TH-D74 FLDM baud/transfer-mode selections."""
 
     # The official updater's shared baud-code helper recognizes all of the
@@ -97,7 +97,7 @@ class FldmBaudMode(Enum):
         self.ack_each_data_packet = ack_each_data_packet
 
     @classmethod
-    def from_baud(cls, baud: int) -> FldmBaudMode:
+    def from_baud(cls, baud: int) -> FLDMBaudMode:
         """Return the official FLDM mode for a baud rate.
 
         Args:
@@ -145,7 +145,7 @@ def _validate_uint(name: str, value: int, bits: int) -> None:
         raise ValueError(f"{name} must fit in uint{bits}")
 
 
-def FldmSum16(data: bytes) -> int:
+def fldm_sum16(data: bytes) -> int:
     """Calculate the FLDM additive halfword sum used for segment verification.
 
     Use this when preparing `SegmentDescriptor.expected_after_checksum` from
@@ -167,7 +167,7 @@ def FldmSum16(data: bytes) -> int:
 
 
 @dataclass(frozen=True, slots=True)
-class FldmFrame:
+class FLDMFrame:
     """Decoded FLDM frame.
 
     Attributes:
@@ -221,7 +221,7 @@ class FldmFrame:
 
 
 @dataclass(frozen=True, slots=True)
-class FldmTargetProfile:
+class FLDMTargetProfile:
     """Loader target profile returned before segment programming starts.
 
     Attributes:
@@ -236,7 +236,7 @@ class FldmTargetProfile:
     status_code: int
 
     @classmethod
-    def from_payload(cls, payload: bytes) -> FldmTargetProfile:
+    def from_payload(cls, payload: bytes) -> FLDMTargetProfile:
         """Decode the loader's target-profile payload.
 
         Args:
@@ -421,10 +421,10 @@ class SegmentVerifyResult:
         return self.code == 0
 
 
-class FldmCommandError(RuntimeError):
+class FLDMCommandError(RuntimeError):
     """Raised when the loader returns an error frame (`0x15`)."""
 
-    def __init__(self, code: int, frame: FldmFrame) -> None:
+    def __init__(self, code: int, frame: FLDMFrame) -> None:
         """Create an exception for a firmware error response.
 
         Args:
@@ -437,7 +437,7 @@ class FldmCommandError(RuntimeError):
         super().__init__(f"FLDM error 0x{code:02x}: {description}")
 
 
-class Fldm:
+class FLDM:
     """Serial client for the TH-D74 FLDM firmware loader."""
 
     def __init__(
@@ -465,7 +465,7 @@ class Fldm:
             verbose: Print raw TX/RX bytes as they are written or received.
         """
         _validate_uint("xor_key", xor_key, 8)
-        self.baud_mode = FldmBaudMode.from_baud(baud)
+        self.baud_mode = FLDMBaudMode.from_baud(baud)
 
         self.reply_timeout = reply_timeout
         self.xor_key = xor_key
@@ -474,7 +474,7 @@ class Fldm:
         self._use_ansi_color = _stdout_supports_ansi_color()
         self._rx_log_start: float | None = None
         self._rx_log_line_open = False
-        self.ser: serial.Serial = serial.Serial(
+        self._serial_port: serial.Serial = serial.Serial(
             port=port,
             baudrate=self.baud_mode.baud,
             bytesize=8,
@@ -483,24 +483,24 @@ class Fldm:
             timeout=0.25,
             write_timeout=1,
         )
-        self.ser.reset_input_buffer()
-        self.ser.reset_output_buffer()
+        self._serial_port.reset_input_buffer()
+        self._serial_port.reset_output_buffer()
 
-    def __enter__(self) -> Fldm:
+    def __enter__(self) -> FLDM:
         """Return this client for use as a context manager."""
         return self
 
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
     ) -> None:
         """Close the serial connection on context-manager exit."""
-        self.Close()
+        self.close()
 
     @staticmethod
-    def CalculateXorKey(magic: bytes) -> int:
+    def calculate_xor_key(magic: bytes) -> int:
         """Calculate the keyed unlock XOR value from an 11-byte magic packet.
 
         Args:
@@ -517,22 +517,22 @@ class Fldm:
         key = ((-(magic[9] + magic[10])) ^ 0xB8) & 0xFF
         return 0x74 if key == 0 else key
 
-    def Close(self) -> None:
+    def close(self) -> None:
         """Close the serial connection."""
-        if self.ser and self.ser.is_open:
-            self.ser.close()
+        if self._serial_port and self._serial_port.is_open:
+            self._serial_port.close()
 
-    def SendRaw(self, data: bytes) -> None:
+    def send_raw(self, data: bytes) -> None:
         """Write raw bytes to the serial port.
 
         Args:
             data: Bytes to write without FLDM framing.
         """
-        self._LogTxBytes(data)
-        self.ser.write(data)
-        self.ser.flush()
+        self._log_tx_bytes(data)
+        self._serial_port.write(data)
+        self._serial_port.flush()
 
-    def RecvRaw(self, timeout: float | None = None) -> bytes | None:
+    def recv_raw(self, timeout: float | None = None) -> bytes | None:
         """Read all raw bytes available until timeout.
 
         Args:
@@ -541,29 +541,29 @@ class Fldm:
         Returns:
             Bytes read, or `None` if no bytes arrived.
         """
-        with self.LogRXWindow():
+        with self.log_rx_window():
             end = time.monotonic() + (
                 self.reply_timeout if timeout is None else timeout
             )
             out = bytearray()
             while time.monotonic() < end:
-                chunk = self.ser.read_all()
+                chunk = self._serial_port.read_all()
                 if chunk:
-                    self._LogRxBytes(chunk)
+                    self._log_rx_bytes(chunk)
                     out.extend(chunk)
                 else:
                     time.sleep(0.01)
             return bytes(out) if out else None
 
-    def SendFrame(self, frame: FldmFrame) -> None:
+    def send_frame(self, frame: FLDMFrame) -> None:
         """Send an already constructed FLDM frame.
 
         Args:
             frame: Frame to encode and transmit.
         """
-        self.SendRaw(frame.to_bytes(xor_key=self.xor_key))
+        self.send_raw(frame.to_bytes(xor_key=self.xor_key))
 
-    def RecvFrame(self, timeout: float | None = None) -> FldmFrame:
+    def recv_frame(self, timeout: float | None = None) -> FLDMFrame:
         """Receive and decode one framed FLDM response.
 
         Args:
@@ -580,18 +580,18 @@ class Fldm:
 
         timeout = self.reply_timeout if timeout is None else timeout
         wire_sync = _xor(SYNC, self.xor_key)
-        with self.LogRXWindow():
+        with self.log_rx_window():
             # Find sync, XORed if encrypted mode is active.
             # This will ignore any remnant bytes that are not sync words.
             window = bytearray()
             while True:
-                raw_byte = self._RecvExact(1, timeout)
+                raw_byte = self._recv_exact(1, timeout)
                 window = (window + raw_byte)[-2:]
                 if bytes(window) == wire_sync:
                     break
 
             # Header after sync: header:u8 + body_len:u32le + verb:u8.
-            raw_head = self._RecvExact(6, timeout)
+            raw_head = self._recv_exact(6, timeout)
             head = _xor(raw_head, self.xor_key)
 
             header = head[0]
@@ -602,7 +602,7 @@ class Fldm:
                 raise ValueError(f"unreasonable body length {body_len}")
 
             # Remaining bytes are payload plus checksum.
-            tail = _xor(self._RecvExact(body_len, timeout), self.xor_key)
+            tail = _xor(self._recv_exact(body_len, timeout), self.xor_key)
             payload = tail[:-1]
             checksum = tail[-1]
 
@@ -612,10 +612,10 @@ class Fldm:
                     f"bad checksum: got 0x{checksum:02x}, expected 0x{expected:02x}"
                 )
 
-            return FldmFrame(verb=head[5], payload=payload, header=header)
+            return FLDMFrame(verb=head[5], payload=payload, header=header)
 
     @contextmanager
-    def LogRXWindow(self) -> Iterator[None]:
+    def log_rx_window(self) -> Iterator[None]:
         """Open a verbose RX logging window for the enclosed receive work."""
         if not self.verbose:
             yield
@@ -631,7 +631,7 @@ class Fldm:
             self._rx_log_start = None
             self._rx_log_line_open = False
 
-    def _LogRxBytes(self, data: bytes) -> None:
+    def _log_rx_bytes(self, data: bytes) -> None:
         """Print received bytes immediately inside the current RX window."""
         if not self.verbose or not data:
             return
@@ -643,19 +643,19 @@ class Fldm:
             self._rx_log_line_open = True
         timestamp = f"+{time.monotonic() - start:.3f}s"
         if self._use_ansi_color:
-            timestamp = f"{ANSI_LIGHT_GREY}{timestamp}{ANSI_RESET}"
+            timestamp = f"{_ANSI_LIGHT_GREY}{timestamp}{_ANSI_RESET}"
         print(
             f" {timestamp} {data.hex(' ')}",
             end="",
             flush=True,
         )
 
-    def _LogTxBytes(self, data: bytes) -> None:
+    def _log_tx_bytes(self, data: bytes) -> None:
         """Print transmitted bytes immediately."""
         if self.verbose:
             print(f"TX {data.hex(' ')}", flush=True)
 
-    def _RecvExact(self, n: int, timeout: float) -> bytes:
+    def _recv_exact(self, n: int, timeout: float) -> bytes:
         """Read an exact byte count from the serial port.
 
         Args:
@@ -674,14 +674,14 @@ class Fldm:
             left = deadline - time.monotonic()
             if left <= 0:
                 raise TimeoutError("timeout reading frame")
-            self.ser.timeout = min(left, 0.25)
-            chunk = self.ser.read(n - len(out))
+            self._serial_port.timeout = min(left, 0.25)
+            chunk = self._serial_port.read(n - len(out))
             if chunk:
-                self._LogRxBytes(chunk)
+                self._log_rx_bytes(chunk)
                 out.extend(chunk)
         return bytes(out)
 
-    def SendPacket(self, verb: int, payload: bytes = b"", *, header: int = 0) -> None:
+    def send_packet(self, verb: int, payload: bytes = b"", *, header: int = 0) -> None:
         """Send one framed FLDM command without reading a response.
 
         Args:
@@ -689,19 +689,19 @@ class Fldm:
             payload: Command payload.
             header: Reserved frame header byte.
         """
-        self.SendFrame(FldmFrame(verb=verb, payload=payload, header=header))
+        self.send_frame(FLDMFrame(verb=verb, payload=payload, header=header))
 
-    def Unlock(self) -> None:
+    def unlock(self) -> None:
         """Enter cleartext FLDM programming mode.
 
         Raises:
             RuntimeError: If the raw unlock replies are not `0x16` then `0x06`.
         """
-        self.SendRaw(MAGIC)
-        self._ReadUnlockReplies(self.reply_timeout)
+        self.send_raw(MAGIC)
+        self._read_unlock_replies(self.reply_timeout)
         self.xor_key = 0
 
-    def UnlockKeyed(self, magic: bytes) -> int:
+    def unlock_keyed(self, magic: bytes) -> int:
         """Enter keyed FLDM programming mode.
 
         Args:
@@ -720,13 +720,13 @@ class Fldm:
         if magic[2:9] != b"Thd74tw":
             raise ValueError('keyed unlock magic must contain b"Thd74tw" at bytes 2..8')
 
-        key = self.CalculateXorKey(magic)
-        self.SendRaw(magic)
-        self._ReadUnlockReplies(self.reply_timeout)
+        key = self.calculate_xor_key(magic)
+        self.send_raw(magic)
+        self._read_unlock_replies(self.reply_timeout)
         self.xor_key = key
         return key
 
-    def StartProgramming(self) -> FldmFrame:
+    def start_programming(self) -> FLDMFrame:
         """Put the loader into its active programming state.
 
         The handheld display will start flashing the "PROGRAM" message.
@@ -734,12 +734,12 @@ class Fldm:
         Returns:
             The acknowledged loader response.
         """
-        return self._SendAndExpectOk(CMD_START_PROGRAM, b"\x00")
+        return self._send_and_expect_ok(CMD_START_PROGRAM, b"\x00")
 
-    def SelectTargetUnit(
+    def select_target_unit(
         self,
         target_unit: int = 1,
-    ) -> FldmFrame:
+    ) -> FLDMFrame:
         """Select the updater target profile before starting a session.
 
         This is unsupported on the TH-D74 firmware.
@@ -751,12 +751,12 @@ class Fldm:
             The acknowledged loader response.
         """
         _validate_uint("target_unit", target_unit, 32)
-        return self._SendAndExpectOk(
+        return self._send_and_expect_ok(
             CMD_TARGET_UNIT,
             target_unit.to_bytes(4, "little"),
         )
 
-    def StartTimedSession(self) -> FldmFrame:
+    def start_timed_session(self) -> FLDMFrame:
         """Start the loader's timed programming session.
 
         This enables the loader timeout window used during firmware update
@@ -765,18 +765,18 @@ class Fldm:
         Returns:
             The acknowledged loader response.
         """
-        return self._SendAndExpectOk(CMD_START_TIMED_SESSION)
+        return self._send_and_expect_ok(CMD_START_TIMED_SESSION)
 
-    def QueryTargetProfile(self) -> FldmTargetProfile:
+    def query_target_profile(self) -> FLDMTargetProfile:
         """Read the loader's target/profile compatibility bits.
 
         Returns:
             Parsed loader target-profile fields.
         """
-        frame = self._SendAndExpectReplyFrame(CMD_QUERY_TARGET_PROFILE)
-        return FldmTargetProfile.from_payload(frame.payload)
+        frame = self._send_and_expect_reply_frame(CMD_QUERY_TARGET_PROFILE)
+        return FLDMTargetProfile.from_payload(frame.payload)
 
-    def SetBaudBaudTransferMode(self) -> FldmFrame:
+    def set_baud_transfer_mode(self) -> FLDMFrame:
         """Apply this client's configured baud transfer policy to the loader.
 
         This step tells the loader which official updater baud rate is in use
@@ -785,7 +785,7 @@ class Fldm:
         reconfigure the transport speed.
 
         In the official updater, this is actually called rather late, just
-        before the SetupSegment command.
+        before the segment setup command.
 
         Returns:
             The acknowledged loader response.
@@ -797,13 +797,13 @@ class Fldm:
                 1 if mode.ack_each_data_packet else 0,
             ]
         )
-        frame = self._SendAndExpectOk(
+        frame = self._send_and_expect_ok(
             CMD_BAUD_TRANSFER_MODE_SELECT,
             payload,
         )
         return frame
 
-    def SetupSegment(
+    def setup_segment(
         self,
         descriptor: SegmentDescriptor,
     ) -> SegmentSetupResult:
@@ -819,7 +819,7 @@ class Fldm:
         # Add reply_timeout as host-side margin; callers can increase it for
         # unknown circumstances.
         timeout = descriptor.checksum_wait_seconds + self.reply_timeout
-        frame = self._SendAndExpectReplyFrame(
+        frame = self._send_and_expect_reply_frame(
             CMD_SEGMENT_SETUP,
             descriptor.to_payload(),
             payload_len=1,
@@ -827,7 +827,7 @@ class Fldm:
         )
         return SegmentSetupResult(frame.payload[0])
 
-    def BeginTransfer(self, descriptor: SegmentDescriptor) -> FldmFrame:
+    def begin_transfer(self, descriptor: SegmentDescriptor) -> FLDMFrame:
         """Erase the active segment and wait until it is ready for data.
 
         Args:
@@ -836,18 +836,18 @@ class Fldm:
         Returns:
             The acknowledged loader response after erase completion.
         """
-        self.SendPacket(CMD_BEGIN_TRANSFER)
+        self.send_packet(CMD_BEGIN_TRANSFER)
         # Add reply_timeout as host-side margin; callers can increase it for
         # unknown circumstances.
         timeout = descriptor.erase_wait_seconds + self.reply_timeout
-        frame = self._RecvUntilNotBusy(timeout=timeout)
-        return self._ExpectOk(frame)
+        frame = self._recv_until_not_busy(timeout=timeout)
+        return self._expect_ok(frame)
 
-    def SendDataPacket(
+    def send_data_packet(
         self,
         segment_offset: int,
         data: bytes,
-    ) -> FldmFrame | None:
+    ) -> FLDMFrame | None:
         """Write one chunk into the active segment transfer buffer.
 
         Args:
@@ -857,22 +857,22 @@ class Fldm:
         Returns:
             The acknowledged loader response when ACKs are enabled, otherwise `None`.
         """
-        payload = self.BuildDataPacket(segment_offset, data)
-        self.SendPacket(CMD_DATA_PACKET, payload)
+        payload = self.build_data_packet(segment_offset, data)
+        self.send_packet(CMD_DATA_PACKET, payload)
 
         if self.baud_mode.ack_each_data_packet:
-            return self._ExpectOk(self._RecvCommandFrame())
+            return self._expect_ok(self._recv_command_frame())
         return None
 
-    def EndTransfer(self) -> FldmFrame:
+    def end_transfer(self) -> FLDMFrame:
         """Tell the loader that all data for the active segment has been sent.
 
         Returns:
             The acknowledged loader response.
         """
-        return self._SendAndExpectOk(CMD_TRANSFER_END)
+        return self._send_and_expect_ok(CMD_TRANSFER_END)
 
-    def VerifySegmentDone(self, descriptor: SegmentDescriptor) -> SegmentVerifyResult:
+    def verify_segment_done(self, descriptor: SegmentDescriptor) -> SegmentVerifyResult:
         """Ask the loader to verify the programmed segment contents.
 
         Args:
@@ -885,17 +885,17 @@ class Fldm:
         # Add reply_timeout as host-side margin; callers can increase it for
         # unknown circumstances.
         timeout = descriptor.checksum_wait_seconds + self.reply_timeout
-        frame = self._SendAndExpectReplyFrame(
+        frame = self._send_and_expect_reply_frame(
             CMD_SEGMENT_DONE,
             payload_len=1,
             timeout=timeout,
         )
         return SegmentVerifyResult(frame.payload[0])
 
-    def Complete(
+    def complete(
         self,
         code: int | bytes = DEFAULT_COMPLETE_CODE,
-    ) -> FldmFrame:
+    ) -> FLDMFrame:
         """Finish the programming session and let the device leave loader mode.
 
         The handheld display will show the "Complete" message.
@@ -914,9 +914,9 @@ class Fldm:
             payload = bytes(code)
             if len(payload) != 4:
                 raise ValueError("complete code must be four bytes")
-        return self._SendAndExpectOk(CMD_COMPLETE, payload)
+        return self._send_and_expect_ok(CMD_COMPLETE, payload)
 
-    def ProgramSegment(
+    def program_segment(
         self,
         descriptor: SegmentDescriptor,
         data: bytes,
@@ -943,7 +943,7 @@ class Fldm:
             raise ValueError(f"chunk_size must be 1..{MAX_DATA_CHUNK_SIZE}")
         if not self.baud_mode.ack_each_data_packet:
             raise RuntimeError(
-                "ProgramSegment requires a baud mode with data-packet ACKs enabled"
+                "program_segment() requires a baud mode with data-packet ACKs enabled"
             )
         data = bytes(data)
         if len(data) != descriptor.data_length:
@@ -952,21 +952,21 @@ class Fldm:
                 f"{descriptor.data_length}"
             )
 
-        setup = self.SetupSegment(descriptor)
+        setup = self.setup_segment(descriptor)
         if setup.current_matches and skip_if_current:
             return setup
 
-        self.BeginTransfer(descriptor)
+        self.begin_transfer(descriptor)
         for offset in range(0, len(data), chunk_size):
-            self.SendDataPacket(offset, data[offset : offset + chunk_size])
-        self.EndTransfer()
-        verify = self.VerifySegmentDone(descriptor)
+            self.send_data_packet(offset, data[offset : offset + chunk_size])
+        self.end_transfer()
+        verify = self.verify_segment_done(descriptor)
         if not verify.verified:
             raise RuntimeError("segment verification failed")
         return verify
 
     @staticmethod
-    def BuildDataPacket(segment_offset: int, data: bytes) -> bytes:
+    def build_data_packet(segment_offset: int, data: bytes) -> bytes:
         """Package one segment chunk in the loader's expected data layout.
 
         Args:
@@ -984,7 +984,7 @@ class Fldm:
             raise ValueError(f"data packet must be at most {MAX_DATA_CHUNK_SIZE} bytes")
         return struct.pack("<II", segment_offset, len(data)) + data
 
-    def _ReadUnlockReplies(self, timeout: float) -> None:
+    def _read_unlock_replies(self, timeout: float) -> None:
         """Read and validate the two raw unlock response bytes.
 
         Args:
@@ -993,26 +993,26 @@ class Fldm:
         Raises:
             RuntimeError: If either unlock response byte is unexpected.
         """
-        with self.LogRXWindow():
-            unlock_ack = self._RecvExact(1, timeout)
+        with self.log_rx_window():
+            unlock_ack = self._recv_exact(1, timeout)
             if unlock_ack != MAGIC_UNLOCK_ACK:
                 raise RuntimeError(
                     f"unexpected unlock ACK {unlock_ack.hex(' ')}, expected {MAGIC_UNLOCK_ACK.hex(' ')}"
                 )
 
-            mode_ok = self._RecvExact(1, timeout)
+            mode_ok = self._recv_exact(1, timeout)
             if mode_ok != MAGIC_MODE_OK:
                 raise RuntimeError(
                     f"unexpected mode-change OK {mode_ok.hex(' ')}, expected {MAGIC_MODE_OK.hex(' ')}"
                 )
 
-    def _SendAndExpectOk(
+    def _send_and_expect_ok(
         self,
         verb: int,
         payload: bytes = b"",
         *,
         timeout: float | None = None,
-    ) -> FldmFrame:
+    ) -> FLDMFrame:
         """Send a command and validate an empty OK response.
 
         Args:
@@ -1023,17 +1023,17 @@ class Fldm:
         Returns:
             The validated OK frame.
         """
-        self.SendPacket(verb, payload)
-        return self._ExpectOk(self._RecvCommandFrame(timeout=timeout))
+        self.send_packet(verb, payload)
+        return self._expect_ok(self._recv_command_frame(timeout=timeout))
 
-    def _SendAndExpectReplyFrame(
+    def _send_and_expect_reply_frame(
         self,
         verb: int,
         payload: bytes = b"",
         *,
         payload_len: int | None = None,
         timeout: float | None = None,
-    ) -> FldmFrame:
+    ) -> FLDMFrame:
         """Send a command and validate its command-specific reply frame.
 
         Command-specific reply frames use the command verb plus one. Generic
@@ -1048,16 +1048,16 @@ class Fldm:
         Returns:
             The validated response frame.
         """
-        self.SendPacket(verb, payload)
-        frame = self._RecvCommandFrame(timeout=timeout)
-        self._ExpectVerb(frame, verb + 1)
+        self.send_packet(verb, payload)
+        frame = self._recv_command_frame(timeout=timeout)
+        self._expect_verb(frame, verb + 1)
         if payload_len is not None and len(frame.payload) != payload_len:
             raise RuntimeError(
                 f"expected response payload length {payload_len}, got {len(frame.payload)}"
             )
         return frame
 
-    def _RecvCommandFrame(self, timeout: float | None = None) -> FldmFrame:
+    def _recv_command_frame(self, timeout: float | None = None) -> FLDMFrame:
         """Receive one response frame and raise on firmware error frames.
 
         Args:
@@ -1067,15 +1067,15 @@ class Fldm:
             The decoded non-error response frame.
 
         Raises:
-            FldmCommandError: If firmware returns response verb `0x15`.
+            FLDMCommandError: If firmware returns response verb `0x15`.
         """
-        frame = self.RecvFrame(timeout=timeout)
+        frame = self.recv_frame(timeout=timeout)
         if frame.verb == VERB_ERROR:
             code = frame.payload[0] if frame.payload else 0
-            raise FldmCommandError(code, frame)
+            raise FLDMCommandError(code, frame)
         return frame
 
-    def _RecvUntilNotBusy(self, timeout: float | None = None) -> FldmFrame:
+    def _recv_until_not_busy(self, timeout: float | None = None) -> FLDMFrame:
         """Receive frames until the loader stops reporting BUSY.
 
         Args:
@@ -1088,13 +1088,13 @@ class Fldm:
             RuntimeError: If a BUSY response unexpectedly carries payload bytes.
         """
         while True:
-            frame = self._RecvCommandFrame(timeout=timeout)
+            frame = self._recv_command_frame(timeout=timeout)
             if frame.verb != VERB_BUSY:
                 return frame
             if frame.payload:
                 raise RuntimeError("busy frame unexpectedly included payload")
 
-    def _ExpectOk(self, frame: FldmFrame) -> FldmFrame:
+    def _expect_ok(self, frame: FLDMFrame) -> FLDMFrame:
         """Validate that a response frame is an empty OK frame.
 
         Args:
@@ -1103,7 +1103,7 @@ class Fldm:
         Returns:
             The same response frame.
         """
-        self._ExpectVerb(frame, VERB_OK)
+        self._expect_verb(frame, VERB_OK)
         if frame.payload:
             raise RuntimeError(
                 f"OK frame unexpectedly included {len(frame.payload)} payload bytes"
@@ -1111,7 +1111,7 @@ class Fldm:
         return frame
 
     @staticmethod
-    def _ExpectVerb(frame: FldmFrame, expected_verb: int) -> None:
+    def _expect_verb(frame: FLDMFrame, expected_verb: int) -> None:
         """Validate the response verb.
 
         Args:
@@ -1135,45 +1135,45 @@ def run(
     verbose: bool = False,
 ) -> None:
     """Run a minimal cleartext FLDM command smoke test."""
-    with Fldm(port, baud=baud, reply_timeout=reply_timeout, verbose=verbose) as f:
+    with FLDM(port, baud=baud, reply_timeout=reply_timeout, verbose=verbose) as fldm:
         print("# Starting unencrypted program mode.")
-        f.Unlock()
+        fldm.unlock()
 
         print("# Send start-program command.")
-        print(f.StartProgramming())
+        print(fldm.start_programming())
         time.sleep(2)  # Show the flashing PROGRAM on display.
 
         # print("# Select updater target profile.")
-        # print(f.SelectTargetUnit())
+        # print(fldm.select_target_unit())
 
         print("# Start timed programming session.")
-        print(f.StartTimedSession())
+        print(fldm.start_timed_session())
 
         print("# Query target profile.")
-        print(f.QueryTargetProfile())
+        print(fldm.query_target_profile())
 
         print("# Select baud/transfer mode.")
-        print(f.SetBaudBaudTransferMode())
+        print(fldm.set_baud_transfer_mode())
 
         # TODO: Setup firmware segments.
         # TODO: Send the firmware segments.
 
         print("# Send complete command.")
-        print(f.Complete())
+        print(fldm.complete())
 
 
 def main() -> None:
     """Parse command-line arguments and run the smoke test."""
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", default="/dev/ttyACM0")
-    ap.add_argument("--baud", type=int, default=115200)
-    ap.add_argument("--reply-timeout", type=float, default=2.0)
-    ap.add_argument(
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", default="/dev/ttyACM0")
+    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--reply-timeout", type=float, default=2.0)
+    parser.add_argument(
         "-v", "--verbose", action="store_true", help="print raw TX/RX bytes"
     )
-    a = ap.parse_args()
+    args = parser.parse_args()
 
-    run(a.port, a.baud, a.reply_timeout, verbose=a.verbose)
+    run(args.port, args.baud, args.reply_timeout, verbose=args.verbose)
 
 
 def _stdout_supports_ansi_color() -> bool:
