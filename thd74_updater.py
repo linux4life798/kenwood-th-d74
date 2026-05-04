@@ -450,7 +450,9 @@ class Fldm:
             baud: Host serial baud rate/CDC line-coding value. The USB CDC
                 loader does not use this to change firmware transport speed;
                 command `0x33` records the derived baud-mode code.
-            reply_timeout: Default timeout for framed replies.
+            reply_timeout: Default reply timeout for public command helpers.
+                Long segment operations add this as margin to the wait time
+                declared by the segment descriptor.
             xor_key: Initial XOR key. Use zero for cleartext unlock.
             max_payload: Maximum accepted response payload length.
         """
@@ -633,25 +635,21 @@ class Fldm:
         """
         self.SendFrame(FldmFrame(verb=verb, payload=payload, header=header))
 
-    def Unlock(self, timeout: float = 1.0) -> None:
+    def Unlock(self) -> None:
         """Enter cleartext FLDM programming mode.
-
-        Args:
-            timeout: Timeout for each raw unlock response byte.
 
         Raises:
             RuntimeError: If the raw unlock replies are not `0x16` then `0x06`.
         """
         self.SendRaw(MAGIC)
-        self._ReadUnlockReplies(timeout)
+        self._ReadUnlockReplies(self.reply_timeout)
         self.xor_key = 0
 
-    def UnlockKeyed(self, magic: bytes, timeout: float = 1.0) -> int:
+    def UnlockKeyed(self, magic: bytes) -> int:
         """Enter keyed FLDM programming mode.
 
         Args:
             magic: Full 11-byte keyed unlock packet.
-            timeout: Timeout for each raw unlock response byte.
 
         Returns:
             The XOR key calculated from `magic` and stored on this client.
@@ -668,28 +666,23 @@ class Fldm:
 
         key = self.CalculateXorKey(magic)
         self.SendRaw(magic)
-        self._ReadUnlockReplies(timeout)
+        self._ReadUnlockReplies(self.reply_timeout)
         self.xor_key = key
         return key
 
-    def StartProgramming(self, timeout: float | None = None) -> FldmFrame:
+    def StartProgramming(self) -> FldmFrame:
         """Put the loader into its active programming state.
 
         The handheld display will start flashing the "PROGRAM" message.
 
-        Args:
-            timeout: Optional response timeout.
-
         Returns:
             The acknowledged loader response.
         """
-        return self._SendAndExpectOk(CMD_START_PROGRAM, b"\x00", timeout=timeout)
+        return self._SendAndExpectOk(CMD_START_PROGRAM, b"\x00")
 
     def SelectTargetUnit(
         self,
         target_unit: int = 1,
-        *,
-        timeout: float | None = None,
     ) -> FldmFrame:
         """Select the updater target profile before starting a session.
 
@@ -697,7 +690,6 @@ class Fldm:
 
         Args:
             target_unit: Target unit value from the updater metadata.
-            timeout: Optional response timeout.
 
         Returns:
             The acknowledged loader response.
@@ -706,43 +698,29 @@ class Fldm:
         return self._SendAndExpectOk(
             CMD_TARGET_UNIT,
             target_unit.to_bytes(4, "little"),
-            timeout=timeout,
         )
 
-    def StartTimedSession(self, timeout: float | None = None) -> FldmFrame:
+    def StartTimedSession(self) -> FldmFrame:
         """Start the loader's timed programming session.
 
         This enables the loader timeout window used during firmware update
         traffic. It does not authenticate the host or exchange a token.
 
-        Args:
-            timeout: Optional response timeout.
-
         Returns:
             The acknowledged loader response.
         """
-        return self._SendAndExpectOk(CMD_START_TIMED_SESSION, timeout=timeout)
+        return self._SendAndExpectOk(CMD_START_TIMED_SESSION)
 
-    def QueryTargetProfile(self, timeout: float | None = None) -> FldmTargetProfile:
+    def QueryTargetProfile(self) -> FldmTargetProfile:
         """Read the loader's target/profile compatibility bits.
-
-        Args:
-            timeout: Optional response timeout.
 
         Returns:
             Parsed loader target-profile fields.
         """
-        frame = self._SendAndExpectReplyFrame(
-            CMD_QUERY_TARGET_PROFILE,
-            timeout=timeout,
-        )
+        frame = self._SendAndExpectReplyFrame(CMD_QUERY_TARGET_PROFILE)
         return FldmTargetProfile.from_payload(frame.payload)
 
-    def SetBaudBaudTransferMode(
-        self,
-        *,
-        timeout: float | None = None,
-    ) -> FldmFrame:
+    def SetBaudBaudTransferMode(self) -> FldmFrame:
         """Apply this client's configured baud transfer policy to the loader.
 
         This step tells the loader which official updater baud rate is in use
@@ -752,9 +730,6 @@ class Fldm:
 
         In the official updater, this is actually called rather late, just
         before the SetupSegment command.
-
-        Args:
-            timeout: Optional response timeout.
 
         Returns:
             The acknowledged loader response.
@@ -769,7 +744,6 @@ class Fldm:
         frame = self._SendAndExpectOk(
             CMD_BAUD_TRANSFER_MODE_SELECT,
             payload,
-            timeout=timeout,
         )
         return frame
 
@@ -817,15 +791,12 @@ class Fldm:
         self,
         segment_offset: int,
         data: bytes,
-        *,
-        timeout: float | None = None,
     ) -> FldmFrame | None:
         """Write one chunk into the active segment transfer buffer.
 
         Args:
             segment_offset: Offset from the active descriptor base address.
             data: Chunk bytes. Keep chunks at or below `0x800` bytes.
-            timeout: Optional response timeout when waiting for ACK.
 
         Returns:
             The acknowledged loader response when ACKs are enabled, otherwise `None`.
@@ -834,19 +805,16 @@ class Fldm:
         self.SendPacket(CMD_DATA_PACKET, payload)
 
         if self.baud_mode.ack_each_data_packet:
-            return self._ExpectOk(self._RecvCommandFrame(timeout=timeout))
+            return self._ExpectOk(self._RecvCommandFrame())
         return None
 
-    def EndTransfer(self, timeout: float | None = None) -> FldmFrame:
+    def EndTransfer(self) -> FldmFrame:
         """Tell the loader that all data for the active segment has been sent.
-
-        Args:
-            timeout: Optional response timeout.
 
         Returns:
             The acknowledged loader response.
         """
-        return self._SendAndExpectOk(CMD_TRANSFER_END, timeout=timeout)
+        return self._SendAndExpectOk(CMD_TRANSFER_END)
 
     def VerifySegmentDone(self, descriptor: SegmentDescriptor) -> SegmentVerifyResult:
         """Ask the loader to verify the programmed segment contents.
@@ -871,8 +839,6 @@ class Fldm:
     def Complete(
         self,
         code: int | bytes = DEFAULT_COMPLETE_CODE,
-        *,
-        timeout: float | None = None,
     ) -> FldmFrame:
         """Finish the programming session and let the device leave loader mode.
 
@@ -881,7 +847,6 @@ class Fldm:
         Args:
             code: Four-byte completion code from the updater metadata, or an
                 integer encoded little-endian.
-            timeout: Optional response timeout.
 
         Returns:
             The acknowledged loader response.
@@ -893,7 +858,7 @@ class Fldm:
             payload = bytes(code)
             if len(payload) != 4:
                 raise ValueError("complete code must be four bytes")
-        return self._SendAndExpectOk(CMD_COMPLETE, payload, timeout=timeout)
+        return self._SendAndExpectOk(CMD_COMPLETE, payload)
 
     def ProgramSegment(
         self,
