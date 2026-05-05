@@ -94,3 +94,37 @@ send a serial error byte.
   15 03  data packet/write rejected
   15 04  another command is already active
   ```
+
+  Command response table:
+
+  | Verb | Function | Params | Expected response |
+  | --- | --- | --- | --- |
+  | `30` | Enter programming state | `00` | `06` |
+  | `31` | Query target profile | empty | `32` + 17-byte payload |
+  | `33` | Select transfer mode | `mode:u8`, `ack:u8` | `06` |
+  | `40` | Set up segment | `SegmentDescriptor` | `41` + result |
+  | `42` | Begin segment transfer | empty | `11` until `06` |
+  | `43` | Send data chunk | `offset:u32`, data | if ACKs: `06` |
+  | `44` | End segment transfer | empty | `06` |
+  | `45` | Verify segment | empty | `46` + result |
+  | `50` | Complete update | `code:u32` | `06` |
+  | `a0` | Start timed session | empty | `06` |
+  | `a3` | Select target unit | `target_unit:u32` | unsupported |
+
+  Command `40` uses these `SegmentDescriptor` params:
+
+  ```text
+  flash_start_addr:u32
+  data_length:u32
+  erase_length:u32
+  padding:4 bytes
+  target_type_mask:u64
+  erase_wait_seconds:u32
+  expected_before_checksum:u16
+  expected_after_checksum:u16
+  checksum_start_offset:u32
+  checksum_length:u32
+  checksum_wait_seconds:u32
+  final_version_offset:u32
+  expected_final_version_string:bytes
+  ```
