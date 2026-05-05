@@ -2,7 +2,7 @@
 
 Tools and information for modifying firmware on Kenwood TH-D74 radios.
 
-Checkout the [PROTOCOL.md] and [thd74_updater.py].
+Checkout the [PROTOCOL.md] and [updater.py].
 
 Run with uv:
 
@@ -11,4 +11,4 @@ uv run openwood
 ```
 
 [PROTOCOL.md]: PROTOCOL.md
-[thd74_updater.py]: thd74_updater.py
+[updater.py]: updater.py
