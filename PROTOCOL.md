@@ -97,35 +97,35 @@ send a serial error byte.
 
   Command response table:
 
-  | Verb | Function | Params | Expected response |
-  | --- | --- | --- | --- |
-  | `30` | Enter programming state | `00` | `06` |
-  | `31` | Query target profile | empty | `32` + 17-byte payload |
-  | `33` | Select transfer mode | `mode:u8`, `ack:u8` | `06` |
-  | `40` | Set up segment | `SegmentDescriptor` | `41` + result |
-  | `42` | Begin segment transfer | empty | `11` until `06` |
-  | `43` | Send data chunk | `offset:u32`, data | if ACKs: `06` |
-  | `44` | End segment transfer | empty | `06` |
-  | `45` | Verify segment | empty | `46` + result |
-  | `50` | Complete update | `code:u32` | `06` |
-  | `a0` | Start timed session | empty | `06` |
-  | `a3` | Select target unit | `target_unit:u32` | unsupported |
+  | Verb | Function          | Payload             | Response               |
+  | ---- | ----------------- | ------------------- | ---------------------- |
+  | `30` | Enter program     | `00`                | `06`                   |
+  | `31` | Query target      | empty               | `32` + 17-byte payload |
+  | `33` | Baud and Ack mode | `baud:u8`, `ack:u8` | `06`                   |
+  | `40` | Setup segment     | `descriptor`        | `41` + result          |
+  | `42` | Begin transfer    | empty               | `11` until `06`        |
+  | `43` | Send chunk        | `offset:u32`, data  | if ACKs: `06`          |
+  | `44` | End transfer      | empty               | `06`                   |
+  | `45` | Verify segment    | empty               | `46` + result          |
+  | `50` | Complete update   | `code:u32`          | `06`                   |
+  | `a0` | Timed session     | empty               | `06`                   |
+  | `a3` | Select target     | `target_unit:u32`   | unsupported            |
 
   Command/Verb `40` uses these `SegmentDescriptor` params:
 
-  | Type | Field | Tag |
-  | --- | --- | --- |
-  | `u32` | `flash_start_addr` | `$SA` |
-  | `u32` | `data_length` | `$DL` |
-  | `u32` | `erase_length` | `$EL` |
-  | `u32` | `padding` | `0` |
-  | `u64` | `target_type_mask` | `$TT` |
-  | `u32` | `erase_wait_seconds` | `$ET` |
-  | `u16` | `expected_before_checksum` | `$CB` |
-  | `u16` | `expected_after_checksum` | `$CA` |
-  | `u32` | `checksum_start_offset` | `$CS` |
-  | `u32` | `checksum_length` | `$CL` |
-  | `u32` | `checksum_wait_seconds` | `$CT` |
-  | `u32` | `version_start_offset` | `$VS` |
-  | `u32` | `version_length` | `$VL` |
-  | `u8[]` | `version/check bytes` | `$VA` |
+  | Type   | Field                        | Official Updater Tag |
+  | ------ | ---------------------------- | -------------------- |
+  | `u32`  | `flash_start_addr`           | `$SA`                |
+  | `u32`  | `data_length`                | `$DL`                |
+  | `u32`  | `erase_length`               | `$EL`                |
+  | `u32`  | padding                      |                      |
+  | `u64`  | `target_type_mask`           | `$TT`                |
+  | `u32`  | `erase_wait_seconds`         | `$ET`                |
+  | `u16`  | `expected_before_checksum`   | `$CB`                |
+  | `u16`  | `expected_after_checksum`    | `$CA`                |
+  | `u32`  | `checksum_start_offset`      | `$CS`                |
+  | `u32`  | `checksum_length`            | `$CL`                |
+  | `u32`  | `checksum_wait_seconds`      | `$CT`                |
+  | `u32`  | `version_start_offset`       | `$VS`                |
+  | `u32`  | `version_length`             | `$VL`                |
+  | `u8[]` | `version/check bytes`        | `$VA`                |
