@@ -9,5 +9,5 @@ dependencies = [
 ]
 
 [project.scripts]
-openwood = "thd74_updater:main"
-updater = "thd74_updater:main"
+openwood = "updater:main"
+updater = "updater:main"
