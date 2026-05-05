@@ -1,13 +1,13 @@
-# Kenwood TH-D74 Tools
+# Openwood
 
-Tools and information for modifying the firmware on a Kenwood TH-D74 radios
+Tools and information for modifying firmware on Kenwood TH-D74 radios.
 
 Checkout the [PROTOCOL.md] and [thd74_updater.py].
 
 Run with uv:
 
 ```bash
-uv run updater
+uv run openwood
 ```
 
 [PROTOCOL.md]: PROTOCOL.md
