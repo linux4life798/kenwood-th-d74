@@ -111,20 +111,21 @@ send a serial error byte.
   | `a0` | Start timed session | empty | `06` |
   | `a3` | Select target unit | `target_unit:u32` | unsupported |
 
-  Command `40` uses these `SegmentDescriptor` params:
+  Command/Verb `40` uses these `SegmentDescriptor` params:
 
-  ```text
-  flash_start_addr:u32
-  data_length:u32
-  erase_length:u32
-  padding:4 bytes
-  target_type_mask:u64
-  erase_wait_seconds:u32
-  expected_before_checksum:u16
-  expected_after_checksum:u16
-  checksum_start_offset:u32
-  checksum_length:u32
-  checksum_wait_seconds:u32
-  final_version_offset:u32
-  expected_final_version_string:bytes
-  ```
+  | Type | Field | Tag |
+  | --- | --- | --- |
+  | `u32` | `flash_start_addr` | `$SA` |
+  | `u32` | `data_length` | `$DL` |
+  | `u32` | `erase_length` | `$EL` |
+  | `u32` | `padding` | `0` |
+  | `u64` | `target_type_mask` | `$TT` |
+  | `u32` | `erase_wait_seconds` | `$ET` |
+  | `u16` | `expected_before_checksum` | `$CB` |
+  | `u16` | `expected_after_checksum` | `$CA` |
+  | `u32` | `checksum_start_offset` | `$CS` |
+  | `u32` | `checksum_length` | `$CL` |
+  | `u32` | `checksum_wait_seconds` | `$CT` |
+  | `u32` | `version_start_offset` | `$VS` |
+  | `u32` | `version_length` | `$VL` |
+  | `u8[]` | `version/check bytes` | `$VA` |
