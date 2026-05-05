@@ -47,29 +47,50 @@ although they should always be in order.*
 These replies are unframed and are not XORed. Rejected unlock does not appear to
 send a serial error byte.
 
-## 2) Framed Wire Format
+## 2) Framed Commands
 
-After unlock, framed messages in both directions use the following pattern:
+* After unlock, **all outgoing messages** and **replies with payloads** adhere
+  to the following framing pattern:
 
-```text
-SYNC SYNC HH LL LL LL LL VV PP... CC
-ab   ab   00 01 00 00 00 31       32
-```
+  ```text
+  SYNC SYNC HH LL LL LL LL VV PP... CC
+  ab   ab   00 01 00 00 00 31       32
+  ```
 
-*No trailing CR/LF.*
+  *No trailing CR/LF.*
 
-The fields are as follows:
+  The fields are as follows:
 
-```text
-SYNC SYNC  fixed sync bytes ab ab
-HH         header/reserved byte; firmware transmits 00 and receive does not validate it
-LL..LL     little-endian body length = 1 + payload length
-VV         one-byte command or response verb
-PP...      optional payload bytes
-CC         checksum = sum(HH, LL..LL, VV, PP...) & 0xff
-```
+  ```text
+  SYNC SYNC  fixed sync bytes ab ab
+  HH         header/reserved byte; firmware transmits 00
+             receive does not validate it
+  LL..LL     little-endian body length = 1 + payload length
+  VV         one-byte command or response verb
+  PP...      optional payload bytes
+  CC         checksum = sum(HH, LL..LL, VV, PP...) & 0xff
+  ```
 
-The checksum excludes `SYNC SYNC` and excludes `CC`. Firmware-generated frames
-always use `HH = 00`, but in the opposite direction `HH` can be anything.
-Encrypted framed traffic is XORed byte-for-byte with the key in the unlocking
-procedure, including `ab ab`. Cleartext traffic is not XORed.
+  The checksum excludes `SYNC SYNC` and excludes `CC`. Firmware-generated frames
+  always use `HH = 00`, but in the opposite direction `HH` can be anything.
+  Encrypted framed traffic is XORed byte-for-byte with the key in the unlocking
+  procedure, including `ab ab`. Cleartext traffic is not XORed.
+* Commands that return payloads will use the same framing, but the returned verb
+  (VV) will be the outgoing verb number plus one.
+* Simple commands will only receive a one- or two-byte status-style response,
+  without framing:
+
+  ```text
+  06     OK/ACK
+  11     BUSY
+  15 xx  ERROR/NAK with one-byte error code
+  ```
+
+  Known `15 xx` error codes:
+
+  ```text
+  15 01  unsupported command
+  15 02  invalid start-program payload
+  15 03  data packet/write rejected
+  15 04  another command is already active
+  ```
