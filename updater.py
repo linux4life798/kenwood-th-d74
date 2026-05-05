@@ -45,11 +45,17 @@ VERB_ERROR_CODES = {
 DEFAULT_COMPLETE_CODE = 0xBC15
 DEFAULT_TARGET_TYPE_MASK = 0x0F
 """
-Target variant compatibility mask, decoded as a little endian 8-byte value.
-Firmware update files will provide a value like the following:
+Target variant compatibility mask, decoded as a little-endian 8-byte value.
+Firmware update files provide a value like the following:
 `$TT="0F 00 00 00 00 00 00 00"`
 This is decoded as 0x0F, which is then considered compatible with devices
 whose returned target variant is 0x1, 0x2, 0x4, or 0x8.
+"""
+SUPPORTED_LOADER_PROFILE_MASK = 0x02
+"""
+Loader protocol compatibility mask supported by this updater.
+The TH-D74 FLDM firmware reports this value as 0x02.
+*UNCONFIRMED*
 """
 SEGMENT_DESCRIPTOR_PREFIX_SIZE = 0x34
 SEGMENT_DESCRIPTOR_SIZE = 0x58
@@ -225,23 +231,33 @@ class FLDMFrame:
 
 @dataclass(frozen=True, slots=True)
 class FLDMTargetProfile:
-    """Loader target profile returned before segment programming starts.
+    """Loader's target profile returned by the query_target_profile command.
 
-    The TH-D74 FLDM firmware reports these values so the host-side updater can
-    check whether the update is compatible with the device variant. The updater
-    is expected to compare this response against each segment's target variant
+    This identifies the device variant and loader protocol so the host-side
+    updater can check compatibility with the firmware being applied. The TH-D74
+    expects the host to compare this response against each segment's target-type
     compatibility mask before sending that segment to the device.
 
     Attributes:
-        target_variant_mask: Target variant bits selected by the loader.
-        loader_profile_mask: Additional loader profile bits. This firmware
-            initializes the value to 2 and only returns it in this response.
-        status_code: Trailing status byte. This firmware writes zero.
+        target_variant_mask: A single-bit mask identifying the device
+            type/variant.
+        loader_profile_mask: A single-bit mask that appears to identify the
+            loader protocol. The TH-D74 writes 0x02.
+        status_code: Trailing status byte. The TH-D74 writes zero.
     """
 
     target_variant_mask: int
     loader_profile_mask: int
     status_code: int
+
+    def __post_init__(self) -> None:
+        """Validate that the target and loader masks contain exactly one bit."""
+        for name in ("target_variant_mask", "loader_profile_mask"):
+            value = getattr(self, name)
+            _validate_uint(name, value, 64)
+            if value.bit_count() != 1:
+                raise ValueError(f"{name} must be a single-bit mask")
+        _validate_uint("status_code", self.status_code, 8)
 
     @classmethod
     def from_payload(cls, payload: bytes) -> FLDMTargetProfile:
@@ -260,11 +276,36 @@ class FLDMTargetProfile:
             raise ValueError(
                 f"target profile payload must be 17 bytes, got {len(payload)}"
             )
-        return cls(
-            target_variant_mask=int.from_bytes(payload[0:8], "little"),
-            loader_profile_mask=int.from_bytes(payload[8:16], "little"),
-            status_code=payload[16],
+        target_variant_mask, loader_profile_mask, status_code = struct.unpack(
+            "<QQB", payload
         )
+        return cls(
+            target_variant_mask=target_variant_mask,
+            loader_profile_mask=loader_profile_mask,
+            status_code=status_code,
+        )
+
+    def is_loader_compatible(self) -> bool:
+        """Return True when the update is compatible with the target loader.
+
+        *UNCONFIRMED*
+
+        Returns:
+            True when the target uses the loader protocol this updater supports.
+        """
+        return self.loader_profile_mask == SUPPORTED_LOADER_PROFILE_MASK
+
+    def is_target_compatible(self, segment_target_type_mask: int) -> bool:
+        """Return True when the update is compatible with the target device.
+
+        Args:
+            segment_target_type_mask: The incoming firmware segment's
+                target-type compatibility mask.
+
+        Returns:
+            True when the update is compatible with the target device.
+        """
+        return (self.target_variant_mask & segment_target_type_mask) != 0
 
 
 @dataclass(frozen=True, slots=True)
