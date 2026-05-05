@@ -43,6 +43,14 @@ VERB_ERROR_CODES = {
 }
 
 DEFAULT_COMPLETE_CODE = 0xBC15
+DEFAULT_TARGET_TYPE_MASK = 0x0F
+"""
+Target variant compatibility mask, decoded as a little endian 8-byte value.
+Firmware update files will provide a value like the following:
+`$TT="0F 00 00 00 00 00 00 00"`
+This is decoded as 0x0F, which is then considered compatible with devices
+whose returned target variant is 0x1, 0x2, 0x4, or 0x8.
+"""
 SEGMENT_DESCRIPTOR_PREFIX_SIZE = 0x34
 SEGMENT_DESCRIPTOR_SIZE = 0x58
 MAX_DATA_CHUNK_SIZE = 0x800
@@ -219,6 +227,11 @@ class FLDMFrame:
 class FLDMTargetProfile:
     """Loader target profile returned before segment programming starts.
 
+    The TH-D74 FLDM firmware reports these values so the host-side updater can
+    check whether the update is compatible with the device variant. The updater
+    is expected to compare this response against each segment's target variant
+    compatibility mask before sending that segment to the device.
+
     Attributes:
         target_variant_mask: Target variant bits selected by the loader.
         loader_profile_mask: Additional loader profile bits. This firmware
@@ -267,8 +280,11 @@ class SegmentDescriptor:
             `0x60000000 + offset`.
         data_length: Total number of data bytes expected for the segment.
         erase_length: Number of bytes to erase from `flash_start_addr`.
-        allowed_target_variant_mask: Target compatibility mask from the updater
-            metadata `TT` field.
+        target_type_mask: Target variant compatibility mask, decoded as a
+            little endian 8-byte value. Firmware update files provide values
+            like `$TT="0F 00 00 00 00 00 00 00"`, which decodes as `0x0f` and
+            is compatible with devices whose returned target variant is `0x1`,
+            `0x2`, `0x4`, or `0x8`.
         erase_wait_seconds: Segment erase wait time in seconds.
         expected_before_checksum: Halfword checksum expected from current flash
             before writing. If the final-version marker matches during setup,
@@ -303,7 +319,7 @@ class SegmentDescriptor:
     checksum_length: int
     final_version_offset: int
     expected_final_version_string: bytes = b""
-    allowed_target_variant_mask: int = 0x0F
+    target_type_mask: int = DEFAULT_TARGET_TYPE_MASK
     erase_wait_seconds: int = 0
     checksum_wait_seconds: int = 0x0A
 
@@ -320,9 +336,7 @@ class SegmentDescriptor:
             "checksum_wait_seconds",
         ):
             _validate_uint(name, getattr(self, name), 32)
-        _validate_uint(
-            "allowed_target_variant_mask", self.allowed_target_variant_mask, 64
-        )
+        _validate_uint("target_type_mask", self.target_type_mask, 64)
         _validate_uint("expected_before_checksum", self.expected_before_checksum, 16)
         _validate_uint("expected_after_checksum", self.expected_after_checksum, 16)
 
@@ -347,12 +361,12 @@ class SegmentDescriptor:
             The descriptor prefix plus its expected final version string.
         """
         descriptor = struct.pack(
-            "<4IQIHH5I",
+            "<III4xQIHHIIIII",
             self.flash_start_addr,
             self.data_length,
             self.erase_length,
-            0,
-            self.allowed_target_variant_mask,
+            # 4 padding bytes
+            self.target_type_mask,
             self.erase_wait_seconds,
             self.expected_before_checksum,
             self.expected_after_checksum,
@@ -362,7 +376,8 @@ class SegmentDescriptor:
             self.final_version_offset,
             len(self.expected_final_version_string),
         )
-        return descriptor + self.expected_final_version_string
+        descriptor += self.expected_final_version_string
+        return descriptor
 
 
 @dataclass(frozen=True, slots=True)
