@@ -1077,10 +1077,7 @@ class FLDMLoader:
         """
         if chunk_size <= 0 or chunk_size > DATA_MAX_CHUNK_SIZE:
             raise ValueError(f"chunk_size must be 1..{DATA_MAX_CHUNK_SIZE}")
-        if not self.baud_mode.ack_each_data_packet:
-            raise RuntimeError(
-                "program_segment() requires a baud mode with data-packet ACKs enabled"
-            )
+
         data = bytes(data)
         if len(data) != descriptor.data_length:
             raise ValueError(
