@@ -43,6 +43,8 @@ VERB_ERROR_CODES = {
 }
 
 DEFAULT_COMPLETE_CODE = 0xBC15
+PROTECTED_FLASH_RANGE = (0x60000000, 0x60060000)
+"""Boot/FLDM loader flash window that this updater refuses to erase or write."""
 DEFAULT_TARGET_TYPE_MASK = 0x0F
 """
 Target variant compatibility mask, decoded as a little-endian 8-byte value.
@@ -178,6 +180,61 @@ def fldm_sum16(data: bytes) -> int:
     for offset in range(0, len(data) & ~1, 2):
         total = (total + int.from_bytes(data[offset : offset + 2], "little")) & 0xFFFF
     return total
+
+
+def _check_protected_flash_access(
+    operation: str,
+    start_addr: int,
+    length: int,
+    *,
+    brick_my_radio: bool,
+) -> None:
+    """Raise when a destructive flash operation overlaps protected loader flash."""
+
+    def range_overlaps(
+        range_start_addr: int,
+        range_length: int,
+        protected_start_addr: int,
+        protected_end_addr: int,
+    ) -> bool:
+        """Return true when two half-open address ranges overlap."""
+        if range_length <= 0:
+            return False
+        range_end_addr = range_start_addr + range_length
+        return (
+            range_start_addr < protected_end_addr
+            and protected_start_addr < range_end_addr
+        )
+
+    def format_addr_range(range_start_addr: int, range_length: int) -> str:
+        """Format a half-open address range for diagnostics."""
+        return f"0x{range_start_addr:08x}..0x{range_start_addr + range_length:08x}"
+
+    protected_start, protected_end = PROTECTED_FLASH_RANGE
+    if not range_overlaps(
+        start_addr,
+        length,
+        protected_start,
+        protected_end,
+    ):
+        return
+    protected_range = format_addr_range(
+        protected_start,
+        protected_end - protected_start,
+    )
+    if brick_my_radio:
+        print(
+            f"WARNING: brick_my_radio=True is overriding {operation} protection for "
+            f"boot/FLDM loader flash {protected_range}",
+            file=sys.stderr,
+        )
+        return
+    attempted_range = format_addr_range(start_addr, length)
+    raise RuntimeError(
+        f"refusing to {operation} protected loader flash {protected_range} "
+        f"with range {attempted_range}; pass brick_my_radio=True only if you "
+        "intentionally want to overwrite the boot/FLDM loader"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -862,7 +919,7 @@ class FLDMLoader:
         )
         return frame
 
-    def setup_segment(
+    def _setup_segment(
         self,
         descriptor: SegmentDescriptor,
     ) -> SegmentSetupResult:
@@ -886,7 +943,10 @@ class FLDMLoader:
         )
         return SegmentSetupResult(frame.payload[0])
 
-    def begin_transfer(self, descriptor: SegmentDescriptor) -> FLDMFrame:
+    def _begin_transfer(
+        self,
+        descriptor: SegmentDescriptor,
+    ) -> FLDMFrame:
         """Erase the active segment and wait until it is ready for data.
 
         Args:
@@ -902,28 +962,39 @@ class FLDMLoader:
         frame = self._recv_until_not_busy(timeout=timeout)
         return self._expect_ok(frame)
 
-    def send_data_packet(
+    def _send_data_packet(
         self,
+        descriptor: SegmentDescriptor,
         segment_offset: int,
         data: bytes,
     ) -> FLDMFrame | None:
         """Write one chunk into the active segment transfer buffer.
 
         Args:
+            descriptor: Active segment metadata used to validate the write.
             segment_offset: Offset from the active descriptor base address.
             data: Chunk bytes. Keep chunks at or below `0x800` bytes.
 
         Returns:
             The acknowledged loader response when ACKs are enabled, otherwise `None`.
         """
-        payload = self.build_data_packet(segment_offset, data)
+        _validate_uint("segment_offset", segment_offset, 32)
+        data = bytes(data)
+        if segment_offset > descriptor.data_length:
+            raise ValueError("segment_offset exceeds descriptor data_length")
+        if len(data) > descriptor.data_length - segment_offset:
+            raise ValueError(
+                "data packet extends past descriptor data_length "
+                f"0x{descriptor.data_length:08x}"
+            )
+        payload = self._build_data_packet(segment_offset, data)
         self.send_packet(CMD_DATA_PACKET, payload)
 
         if self.baud_mode.ack_each_data_packet:
             return self._expect_ok(self._recv_command_frame())
         return None
 
-    def end_transfer(self) -> FLDMFrame:
+    def _end_transfer(self) -> FLDMFrame:
         """Tell the loader that all data for the active segment has been sent.
 
         Returns:
@@ -931,7 +1002,10 @@ class FLDMLoader:
         """
         return self._send_and_expect_ok(CMD_TRANSFER_END)
 
-    def verify_segment_done(self, descriptor: SegmentDescriptor) -> SegmentVerifyResult:
+    def _verify_segment_done(
+        self,
+        descriptor: SegmentDescriptor,
+    ) -> SegmentVerifyResult:
         """Ask the loader to verify the programmed segment contents.
 
         Args:
@@ -982,6 +1056,7 @@ class FLDMLoader:
         *,
         skip_if_current: bool = True,
         chunk_size: int = DATA_DEFAULT_CHUNK_SIZE,
+        brick_my_radio: bool = False,
     ) -> SegmentVerifyResult | SegmentSetupResult:
         """Run the standard setup, erase, write, end, and verify flow.
 
@@ -991,6 +1066,8 @@ class FLDMLoader:
             skip_if_current: When true, return after setup if current flash
                 already matches the descriptor.
             chunk_size: Maximum data bytes per transfer chunk.
+            brick_my_radio: Permit erasing or writing the protected boot/FLDM
+                loader window. Leave false for normal firmware updates.
 
         Returns:
             `SegmentSetupResult` when skipped, otherwise `SegmentVerifyResult`.
@@ -1010,22 +1087,38 @@ class FLDMLoader:
                 f"data length {len(data)} does not match descriptor data_length "
                 f"{descriptor.data_length}"
             )
+        _check_protected_flash_access(
+            "erase",
+            descriptor.flash_start_addr,
+            descriptor.erase_length,
+            brick_my_radio=brick_my_radio,
+        )
+        _check_protected_flash_access(
+            "write",
+            descriptor.flash_start_addr,
+            descriptor.data_length,
+            brick_my_radio=brick_my_radio,
+        )
 
-        setup = self.setup_segment(descriptor)
+        setup = self._setup_segment(descriptor)
         if setup.current_matches and skip_if_current:
             return setup
 
-        self.begin_transfer(descriptor)
+        self._begin_transfer(descriptor)
         for offset in range(0, len(data), chunk_size):
-            self.send_data_packet(offset, data[offset : offset + chunk_size])
-        self.end_transfer()
-        verify = self.verify_segment_done(descriptor)
+            self._send_data_packet(
+                descriptor,
+                offset,
+                data[offset : offset + chunk_size],
+            )
+        self._end_transfer()
+        verify = self._verify_segment_done(descriptor)
         if not verify.verified:
             raise RuntimeError("segment verification failed")
         return verify
 
     @staticmethod
-    def build_data_packet(segment_offset: int, data: bytes) -> bytes:
+    def _build_data_packet(segment_offset: int, data: bytes) -> bytes:
         """Package one segment chunk in the loader's expected data layout.
 
         Args:
@@ -1246,6 +1339,7 @@ def main() -> None:
     args = parser.parse_args()
 
     run(args.port, args.baud, args.reply_timeout, verbose=args.verbose)
+
 
 if __name__ == "__main__":
     main()
