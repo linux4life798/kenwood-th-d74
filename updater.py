@@ -685,6 +685,7 @@ class FLDMLoader:
         Args:
             frame: Frame to encode and transmit.
         """
+        self._log_tx_frame(frame)
         self.send_raw(frame.to_bytes(xor_key=self.xor_key))
 
     def recv_frame(self, timeout: float | None = None) -> FLDMFrame:
@@ -736,7 +737,9 @@ class FLDMLoader:
                     f"bad checksum: got 0x{checksum:02x}, expected 0x{expected:02x}"
                 )
 
-            return FLDMFrame(verb=head[5], payload=payload, header=header)
+            frame = FLDMFrame(verb=head[5], payload=payload, header=header)
+            self._log_rx_frame(frame)
+            return frame
 
     @contextmanager
     def log_rx_window(self) -> Iterator[None]:
@@ -777,10 +780,24 @@ class FLDMLoader:
             flush=True,
         )
 
+    def _log_rx_frame(self, frame: FLDMFrame) -> None:
+        """Print a decoded RX frame after its raw byte log line."""
+        if not self.verbose:
+            return
+        if self._rx_log_line_open:
+            print(file=sys.stderr, flush=True)
+            self._rx_log_line_open = False
+        print(frame, file=sys.stderr, flush=True)
+
     def _log_tx_bytes(self, data: bytes) -> None:
         """Print transmitted bytes immediately."""
         if self.verbose:
             print(f"TX {data.hex(' ')}", file=sys.stderr, flush=True)
+
+    def _log_tx_frame(self, frame: FLDMFrame) -> None:
+        """Print an encoded TX frame after its raw byte log line."""
+        if self.verbose:
+            print(frame, file=sys.stderr, flush=True)
 
     def _recv_exact(self, n: int, timeout: float) -> bytes:
         """Read an exact byte count from the serial port.
@@ -1317,26 +1334,26 @@ def run(
         fldm.unlock()
 
         print("# Send start-program command.")
-        print(fldm.start_programming())
+        fldm.start_programming()
         time.sleep(2)  # Show the flashing PROGRAM on display.
 
         # print("# Select updater target profile.")
         # print(fldm.select_target_unit())
 
         print("# Start timed programming session.")
-        print(fldm.start_timed_session())
+        fldm.start_timed_session()
 
         print("# Query target profile.")
-        print(fldm.query_target_profile())
+        fldm.query_target_profile()
 
         print("# Select baud/transfer mode.")
-        print(fldm.set_baud_transfer_mode())
+        fldm.set_baud_transfer_mode()
 
         # TODO: Setup firmware segments.
         # TODO: Send the firmware segments.
 
         print("# Send complete command.")
-        print(fldm.complete())
+        fldm.complete()
 
 
 def main() -> None:
