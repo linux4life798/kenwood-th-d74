@@ -61,3 +61,18 @@ It is not copied as one whole image to a single destination.
 | DSP L2 RAM image | `0x60e00000..0x60e40000` | `0x11800000..0x11840000` | `256 KiB / 0x40000` bytes | DSP-core local program image.    |
 | Shared RAM image | `0x60e40000..0x60e60000` | `0x80000000..0x80020000` | `128 KiB / 0x20000` bytes | Shared ARM/DSP memory image.     |
 | DSP DDR image    | `0x60e60000..0x60f00000` | `0xc2000000..0xc20a0000` | `640 KiB / 0xa0000` bytes | DSP runtime image placed in DDR. |
+
+
+## Flash Erase and Program Geometry
+
+The TH-D74 uses the S29GL256S NOR flash in 16-bit mode. A programmer should
+treat erase, program, and buffering limits as chip geometry, independent of the
+firmware implementation.
+
+
+| Property                          | Value                     | Programmer note                                                                                               |
+| --------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Erase sector size                 | `128 KiB / 0x20000` bytes | Erases happen one whole sector at a time. Preserve and rewrite unchanged bytes in any touched sector.         |
+| Program granularity               | `16-bit word / 2` bytes   | Program addresses and payload lengths must be even. The smallest real program operation is one halfword.      |
+| Data bus mode                     | `x16 / 16-bit`            | Treat command and data writes as halfword operations. There is no separate byte-wide flash interface here.    |
+| Maximum write-buffer program size | `512 / 0x200` bytes       | Split longer writes into chunks no larger than `512 / 0x200` bytes. The FLDM loader accepts up to `2048 / 0x800` data bytes per data-packet command. |
