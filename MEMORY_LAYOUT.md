@@ -18,7 +18,9 @@ The firmware uses these CPU-visible memory ranges:
 | Region                   | Address range            | Length                | Notes                                                                       |
 | ------------------------ | ------------------------ | --------------------- | --------------------------------------------------------------------------- |
 | NOR flash address window | `0x60000000..0x62000000` | `32 MiB / 0x02000000` | 32 MiB S29GL256S flash image range.                                         |
-| DDR                      | `0xc0000000..0xc4000000` | `64 MiB / 0x04000000` | 64 MiB DDR working RAM.                                                     |
+| DDR                      | `0xc0000000..0xc4000000` | `64 MiB / 0x04000000` | 64 MiB DDR working RAM. Partially used to hold DSP flash section.           |
+| DSP L2 RAM               | `0x11800000..0x11840000` | `256 KiB / 0x40000`   | DSP-core local program RAM. Populated from DSP flash section.               |
+| Shared ARM/DSP RAM       | `0x80000000..0x80020000` | `128 KiB / 0x20000`   | Shared ARM/DSP RAM. Populated from DSP flash section.                       |
 | ARM local RAM            | `0xffff0000..0xffff2000` | `8 KiB / 0x2000`      | Boot scratch/local RAM area. Used during early bootloader as general stack. |
 
 
@@ -44,3 +46,18 @@ marker. Otherwise, the bootloader continues to boot the main firmware.
 | Initial bootloader         | `0x60000000..0x60020000` | executes in place        | `128 KiB / 0x20000` byte slot | `0x60000000` boot config word; ARM code at `0x60000004` | Boot-critical first-stage loader and handoff selector. |
 | FLDM loader                | `0x60020000..0x60060000` | `0xc0000000..0xc0040000` | `256 KiB / 0x40000` bytes     | `0xc0000000` vector table                               | Recovery/programming loader.                           |
 | Main firmware copied image | `0x60200000..0x60500000` | `0xc0000000..0xc0300000` | `3 MiB / 0x300000` bytes      | `0xc0000000` vector table                               | Normal application image.                              |
+
+
+## DSP Program Copy Map
+
+After the main firmware is running, it loads the DSP program from one
+contiguous flash package at `0x60e00000..0x60f00000`. The package is copied as
+three hard-coded sections with fixed source offsets, destinations, and lengths.
+It is not copied as one whole image to a single destination.
+
+
+| DSP section      | Flash source range       | Runtime destination      | Length                    | Meaning                          |
+| ---------------- | ------------------------ | ------------------------ | ------------------------- | -------------------------------- |
+| DSP L2 RAM image | `0x60e00000..0x60e40000` | `0x11800000..0x11840000` | `256 KiB / 0x40000` bytes | DSP-core local program image.    |
+| Shared RAM image | `0x60e40000..0x60e60000` | `0x80000000..0x80020000` | `128 KiB / 0x20000` bytes | Shared ARM/DSP memory image.     |
+| DSP DDR image    | `0x60e60000..0x60f00000` | `0xc2000000..0xc20a0000` | `640 KiB / 0xa0000` bytes | DSP runtime image placed in DDR. |
