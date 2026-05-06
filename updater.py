@@ -59,8 +59,13 @@ The TH-D74 FLDM firmware reports this value as 0x02.
 """
 SEGMENT_DESCRIPTOR_PREFIX_SIZE = 0x34
 SEGMENT_DESCRIPTOR_SIZE = 0x58
-MAX_DATA_CHUNK_SIZE = 0x800
-DEFAULT_DATA_CHUNK_SIZE = 0x400
+
+# The FLDM Loader can receive a maximum of 2048 byte data chunk.
+# It will internally split this into 512 byte chunks, which is the maximum
+# size that can be buffered for write to the flash chip. That being said,
+# the flash chip can still only write a 16bit word at a time.
+DATA_MAX_CHUNK_SIZE = 2048
+DATA_DEFAULT_CHUNK_SIZE = 1024
 
 
 class FLDMBaudMode(Enum):
@@ -976,7 +981,7 @@ class FLDMLoader:
         data: bytes,
         *,
         skip_if_current: bool = True,
-        chunk_size: int = DEFAULT_DATA_CHUNK_SIZE,
+        chunk_size: int = DATA_DEFAULT_CHUNK_SIZE,
     ) -> SegmentVerifyResult | SegmentSetupResult:
         """Run the standard setup, erase, write, end, and verify flow.
 
@@ -993,8 +998,8 @@ class FLDMLoader:
         Raises:
             RuntimeError: If final verification returns failure.
         """
-        if chunk_size <= 0 or chunk_size > MAX_DATA_CHUNK_SIZE:
-            raise ValueError(f"chunk_size must be 1..{MAX_DATA_CHUNK_SIZE}")
+        if chunk_size <= 0 or chunk_size > DATA_MAX_CHUNK_SIZE:
+            raise ValueError(f"chunk_size must be 1..{DATA_MAX_CHUNK_SIZE}")
         if not self.baud_mode.ack_each_data_packet:
             raise RuntimeError(
                 "program_segment() requires a baud mode with data-packet ACKs enabled"
@@ -1034,8 +1039,8 @@ class FLDMLoader:
         data = bytes(data)
         if not data:
             raise ValueError("data packet must not be empty")
-        if len(data) > MAX_DATA_CHUNK_SIZE:
-            raise ValueError(f"data packet must be at most {MAX_DATA_CHUNK_SIZE} bytes")
+        if len(data) > DATA_MAX_CHUNK_SIZE:
+            raise ValueError(f"data packet must be at most {DATA_MAX_CHUNK_SIZE} bytes")
         return struct.pack("<II", segment_offset, len(data)) + data
 
     def _read_unlock_replies(self, timeout: float) -> None:
