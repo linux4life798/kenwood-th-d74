@@ -11,9 +11,14 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from types import TracebackType
 
 import serial
+from firmware import SegmentDescriptor
+import update_bad
+from update_exe import UpdateExe
+from utils import hex_fmt, validate_uint
 
 SYNC = b"\xab\xab"
 MAGIC = b"FPROMOD"
@@ -45,22 +50,12 @@ VERB_ERROR_CODES = {
 DEFAULT_COMPLETE_CODE = 0xBC15
 PROTECTED_FLASH_RANGE = (0x60000000, 0x60060000)
 """Boot/FLDM loader flash window that this updater refuses to erase or write."""
-DEFAULT_TARGET_TYPE_MASK = 0x0F
-"""
-Target variant compatibility mask, decoded as a little-endian 8-byte value.
-Firmware update files provide a value like the following:
-`$TT="0F 00 00 00 00 00 00 00"`
-This is decoded as 0x0F, which is then considered compatible with devices
-whose returned target variant is 0x1, 0x2, 0x4, or 0x8.
-"""
 SUPPORTED_LOADER_PROFILE_MASK = 0x02
 """
 Loader protocol compatibility mask supported by this updater.
 The TH-D74 FLDM firmware reports this value as 0x02.
 *UNCONFIRMED*
 """
-SEGMENT_DESCRIPTOR_PREFIX_SIZE = 0x34
-SEGMENT_DESCRIPTOR_SIZE = 0x58
 
 # The FLDM Loader can receive a maximum of 2048 byte data chunk.
 # It will internally split this into 512 byte chunks, which is the maximum
@@ -144,44 +139,6 @@ def _xor(data: bytes, key: int) -> bytes:
     return data if key == 0 else bytes(b ^ key for b in data)
 
 
-def _validate_uint(name: str, value: int, bits: int) -> None:
-    """Validate that a value fits in an unsigned integer bit width.
-
-    Args:
-        name: Field name used in the exception message.
-        value: Integer value to validate.
-        bits: Unsigned integer bit width.
-
-    Raises:
-        ValueError: If value is outside the selected unsigned range.
-    """
-    if bits <= 0:
-        raise ValueError("bits must be positive")
-    if not 0 <= value < (1 << bits):
-        raise ValueError(f"{name} must fit in uint{bits}")
-
-
-def fldm_sum16(data: bytes) -> int:
-    """Calculate the FLDM additive halfword sum used for segment verification.
-
-    Use this when preparing `SegmentDescriptor.expected_after_checksum` from
-    incoming firmware bytes, or `SegmentDescriptor.expected_before_checksum`
-    when you have bytes for the expected pre-write flash contents.
-
-    Args:
-        data: Bytes to sum as little-endian 16-bit words. An odd trailing byte is
-            ignored, matching the firmware implementation.
-
-    Returns:
-        The low 16 bits of the additive halfword sum.
-    """
-    total = 0
-    data = bytes(data)
-    for offset in range(0, len(data) & ~1, 2):
-        total = (total + int.from_bytes(data[offset : offset + 2], "little")) & 0xFFFF
-    return total
-
-
 def _check_protected_flash_access(
     operation: str,
     start_addr: int,
@@ -208,7 +165,7 @@ def _check_protected_flash_access(
 
     def format_addr_range(range_start_addr: int, range_length: int) -> str:
         """Format a half-open address range for diagnostics."""
-        return f"0x{range_start_addr:08x}..0x{range_start_addr + range_length:08x}"
+        return f"{hex_fmt(range_start_addr)}..{hex_fmt(range_start_addr + range_length)}"
 
     protected_start, protected_end = PROTECTED_FLASH_RANGE
     if not range_overlaps(
@@ -254,8 +211,8 @@ class FLDMFrame:
 
     def __post_init__(self) -> None:
         """Normalize payload bytes and validate fixed-width fields."""
-        _validate_uint("header", self.header, 8)
-        _validate_uint("verb", self.verb, 8)
+        validate_uint("header", self.header, 8)
+        validate_uint("verb", self.verb, 8)
         object.__setattr__(self, "payload", bytes(self.payload))
 
     @property
@@ -286,7 +243,7 @@ class FLDMFrame:
         Returns:
             The raw bytes to write to the serial port.
         """
-        _validate_uint("xor_key", xor_key, 8)
+        validate_uint("xor_key", xor_key, 8)
         frame = SYNC + self._body_without_checksum() + bytes([self.checksum])
         return _xor(frame, xor_key)
 
@@ -314,12 +271,13 @@ class FLDMTargetProfile:
 
     def __post_init__(self) -> None:
         """Validate that the target and loader masks contain exactly one bit."""
-        for name in ("target_variant_mask", "loader_profile_mask"):
-            value = getattr(self, name)
-            _validate_uint(name, value, 64)
-            if value.bit_count() != 1:
-                raise ValueError(f"{name} must be a single-bit mask")
-        _validate_uint("status_code", self.status_code, 8)
+        validate_uint("target_variant_mask", self.target_variant_mask, 64)
+        validate_uint("loader_profile_mask", self.loader_profile_mask, 64)
+        validate_uint("status_code", self.status_code, 8)
+        if self.target_variant_mask.bit_count() != 1:
+            raise ValueError("target_variant_mask must be a single-bit mask")
+        if self.loader_profile_mask.bit_count() != 1:
+            raise ValueError("loader_profile_mask must be a single-bit mask")
 
     @classmethod
     def from_payload(cls, payload: bytes) -> FLDMTargetProfile:
@@ -371,119 +329,6 @@ class FLDMTargetProfile:
 
 
 @dataclass(frozen=True, slots=True)
-class SegmentDescriptor:
-    """Description of one flash region to validate, erase, and program.
-
-    The loader consumes the updater's `DataBlockInfo` prefix followed by the
-    optional expected final version string. The field order matches the
-    official updater's marshaled structure.
-
-    Attributes:
-        flash_start_addr: Memory-mapped flash address, usually
-            `0x60000000 + offset`.
-        data_length: Total number of data bytes expected for the segment.
-        erase_length: Number of bytes to erase from `flash_start_addr`.
-        target_type_mask: Target variant compatibility mask, decoded as a
-            little endian 8-byte value. Firmware update files provide values
-            like `$TT="0F 00 00 00 00 00 00 00"`, which decodes as `0x0f` and
-            is compatible with devices whose returned target variant is `0x1`,
-            `0x2`, `0x4`, or `0x8`.
-        erase_wait_seconds: Segment erase wait time in seconds.
-        expected_before_checksum: Halfword checksum expected from current flash
-            before writing. If the final-version marker matches during setup,
-            the firmware calculates the checksum range from current flash and
-            compares it with this value before returning the setup decision.
-        expected_after_checksum: Halfword checksum expected after writing. The
-            firmware calculates the same checksum range after transfer
-            completion and compares it with this value for final verification.
-            This is not assumed to equal `expected_before_checksum`; official
-            updater metadata can and does provide different values.
-        checksum_start_offset: Offset from `flash_start_addr` for the checksum
-            range.
-        checksum_length: Number of bytes in the checksum range.
-        checksum_wait_seconds: Final checksum wait time in seconds.
-        final_version_offset: Offset from `flash_start_addr` where this version
-            string should reside after programming. Setup uses the same location
-            to decide whether current flash already contains the requested
-            version.
-        expected_final_version_string: Version text from the updater metadata.
-            During setup, the firmware treats this as an already-installed
-            marker: if the bytes at `flash_start_addr + final_version_offset`
-            and the before-write checksum both match, the segment can be
-            skipped. The handheld also displays this string during the update.
-    """
-
-    flash_start_addr: int
-    data_length: int
-    erase_length: int
-    expected_before_checksum: int
-    expected_after_checksum: int
-    checksum_start_offset: int
-    checksum_length: int
-    final_version_offset: int
-    expected_final_version_string: bytes = b""
-    target_type_mask: int = DEFAULT_TARGET_TYPE_MASK
-    erase_wait_seconds: int = 0
-    checksum_wait_seconds: int = 0x0A
-
-    def __post_init__(self) -> None:
-        """Validate fixed-width fields and normalize the final version string."""
-        for name in (
-            "flash_start_addr",
-            "data_length",
-            "erase_length",
-            "checksum_start_offset",
-            "checksum_length",
-            "final_version_offset",
-            "erase_wait_seconds",
-            "checksum_wait_seconds",
-        ):
-            _validate_uint(name, getattr(self, name), 32)
-        _validate_uint("target_type_mask", self.target_type_mask, 64)
-        _validate_uint("expected_before_checksum", self.expected_before_checksum, 16)
-        _validate_uint("expected_after_checksum", self.expected_after_checksum, 16)
-
-        expected_final_version_string = bytes(self.expected_final_version_string)
-        max_expected_final_version_string = (
-            SEGMENT_DESCRIPTOR_SIZE - SEGMENT_DESCRIPTOR_PREFIX_SIZE
-        )
-        if len(expected_final_version_string) > max_expected_final_version_string:
-            raise ValueError(
-                "expected_final_version_string must be at most "
-                f"{max_expected_final_version_string} bytes, "
-                f"got {len(expected_final_version_string)}"
-            )
-        object.__setattr__(
-            self, "expected_final_version_string", expected_final_version_string
-        )
-
-    def to_payload(self) -> bytes:
-        """Serialize this descriptor into the loader's setup payload.
-
-        Returns:
-            The descriptor prefix plus its expected final version string.
-        """
-        descriptor = struct.pack(
-            "<III4xQIHHIIIII",
-            self.flash_start_addr,
-            self.data_length,
-            self.erase_length,
-            # 4 padding bytes
-            self.target_type_mask,
-            self.erase_wait_seconds,
-            self.expected_before_checksum,
-            self.expected_after_checksum,
-            self.checksum_start_offset,
-            self.checksum_length,
-            self.checksum_wait_seconds,
-            self.final_version_offset,
-            len(self.expected_final_version_string),
-        )
-        descriptor += self.expected_final_version_string
-        return descriptor
-
-
-@dataclass(frozen=True, slots=True)
 class SegmentSetupResult:
     """Decision returned after the loader checks the target segment.
 
@@ -496,7 +341,7 @@ class SegmentSetupResult:
 
     def __post_init__(self) -> None:
         """Validate the one-byte setup result code."""
-        _validate_uint("code", self.code, 8)
+        validate_uint("code", self.code, 8)
         if self.code not in (0, 1):
             raise ValueError(f"unexpected segment setup result 0x{self.code:02x}")
 
@@ -535,7 +380,7 @@ class SegmentVerifyResult:
 
     def __post_init__(self) -> None:
         """Validate the one-byte final verification result code."""
-        _validate_uint("code", self.code, 8)
+        validate_uint("code", self.code, 8)
         if self.code not in (0, 1):
             raise ValueError(f"unexpected segment verify result 0x{self.code:02x}")
 
@@ -588,7 +433,7 @@ class FLDMLoader:
             max_payload: Maximum accepted response payload length.
             verbose: Print raw TX/RX bytes as they are written or received.
         """
-        _validate_uint("xor_key", xor_key, 8)
+        validate_uint("xor_key", xor_key, 8)
         self.baud_mode = FLDMBaudMode.from_baud(baud)
 
         self.reply_timeout = reply_timeout
@@ -701,7 +546,7 @@ class FLDMLoader:
             TimeoutError: If a complete frame is not received in time.
             ValueError: If the frame has an invalid length or checksum.
         """
-        _validate_uint("xor_key", self.xor_key, 8)
+        validate_uint("xor_key", self.xor_key, 8)
 
         timeout = self.reply_timeout if timeout is None else timeout
         wire_sync = _xor(SYNC, self.xor_key)
@@ -870,15 +715,25 @@ class FLDMLoader:
         self.xor_key = key
         return key
 
-    def start_programming(self) -> FLDMFrame:
+    def start_programming(self, code: int = 0) -> FLDMFrame:
         """Put the loader into its active programming state.
 
-        The handheld display will start flashing the "PROGRAM" message.
+        The FLDM Loader on the TH-D74 only accepts a `code` value of 0,
+        otherwise it will return the error `invalid start-program payload`.
+        Upon successful start-program, the handheld will start flashing the
+        `PROGRAM` message on the display.
+
+        This value is typically found in the official updater package metadata's
+        `TC` field.
+
+        Args:
+            code: One-byte start-program code. This should be 0 for TH-D74.
 
         Returns:
             The acknowledged loader response.
         """
-        return self._send_and_expect_ok(CMD_START_PROGRAM, b"\x00")
+        validate_uint("code", code, 8)
+        return self._send_and_expect_ok(CMD_START_PROGRAM, bytes([code]))
 
     def select_target_unit(
         self,
@@ -894,7 +749,7 @@ class FLDMLoader:
         Returns:
             The acknowledged loader response.
         """
-        _validate_uint("target_unit", target_unit, 32)
+        validate_uint("target_unit", target_unit, 32)
         return self._send_and_expect_ok(
             CMD_TARGET_UNIT,
             target_unit.to_bytes(4, "little"),
@@ -1006,7 +861,7 @@ class FLDMLoader:
         Returns:
             The acknowledged loader response when ACKs are enabled, otherwise `None`.
         """
-        _validate_uint("segment_offset", segment_offset, 32)
+        validate_uint("segment_offset", segment_offset, 32)
         data = bytes(data)
         if segment_offset > descriptor.data_length:
             raise ValueError("segment_offset exceeds descriptor data_length")
@@ -1062,7 +917,13 @@ class FLDMLoader:
     ) -> FLDMFrame:
         """Finish the programming session and let the device leave loader mode.
 
-        The handheld display will show the "Complete" message.
+        The FLDM Loader on the TH-D74 returns OK irrespective of the `code`
+        value, shows the `Complete` message on the display, and then
+        it writes 0xFFFF to the flash address 0x60200060, if you were writing
+        the main firmware segment.
+
+        This value is typically found in the official updater package metadata's
+        `#FC` field.
 
         Args:
             code: Four-byte completion code from the updater metadata, or an
@@ -1072,7 +933,7 @@ class FLDMLoader:
             The acknowledged loader response.
         """
         if isinstance(code, int):
-            _validate_uint("code", code, 32)
+            validate_uint("code", code, 32)
             payload = code.to_bytes(4, "little")
         else:
             payload = bytes(code)
@@ -1163,7 +1024,7 @@ class FLDMLoader:
         Returns:
             Chunk payload bytes ready to frame and transmit.
         """
-        _validate_uint("segment_offset", segment_offset, 32)
+        validate_uint("segment_offset", segment_offset, 32)
         data = bytes(data)
         if not data:
             raise ValueError("data packet must not be empty")
@@ -1323,13 +1184,22 @@ class FLDMLoader:
 
 
 def run(
+    program: Path,
     port: str,
     baud: int,
     reply_timeout: float = 2.0,
     *,
+    dry_run: bool = False,
     verbose: bool = False,
 ) -> None:
-    """Run a minimal cleartext FLDM command smoke test."""
+    """Run the metadata-driven FLDM flow."""
+    if program == Path(update_bad.SPECIAL_WORD):
+        firmware_descriptor, segments = update_bad.build()
+    else:
+        update_exe = UpdateExe.from_exe(program)
+        firmware_descriptor = update_exe.firmware_descriptor
+        segments = update_exe.segments
+
     with FLDMLoader(
         port,
         baud=baud,
@@ -1340,8 +1210,11 @@ def run(
         fldm.unlock()
 
         print("# Send start-program command.")
-        fldm.start_programming()
-        time.sleep(2)  # Show the flashing PROGRAM on display.
+        start_program_code = firmware_descriptor.start_program_code
+        fldm.start_programming(
+            0 if start_program_code is None else start_program_code
+        )
+        # time.sleep(2)  # Show the flashing PROGRAM on display.
 
         # print("# Select updater target profile.")
         # print(fldm.select_target_unit())
@@ -1350,30 +1223,63 @@ def run(
         fldm.start_timed_session()
 
         print("# Query target profile.")
-        fldm.query_target_profile()
+        target_profile = fldm.query_target_profile()
+        print(f"# Target profile: {target_profile}")
 
         print("# Select baud/transfer mode.")
         fldm.set_baud_transfer_mode()
 
-        # TODO: Setup firmware segments.
-        # TODO: Send the firmware segments.
+        print("# Segments that would be flashed.")
+        for segment in segments:
+            compatible = target_profile.is_target_compatible(
+                segment.descriptor.target_type_mask
+            )
+            segment.print_dry_run(compatible=compatible)
+            if dry_run:
+                continue
+            if not compatible:
+                print(f"# Skip incompatible segment [{segment.index}] {segment.label}.")
+                continue
+            print(f"# Flash segment [{segment.index}] {segment.label}.")
+            fldm.program_segment(segment.descriptor, segment.data)
 
         print("# Send complete command.")
-        fldm.complete()
+        completion_code = firmware_descriptor.completion_code
+        fldm.complete(
+            DEFAULT_COMPLETE_CODE if completion_code is None else completion_code
+        )
 
 
 def main() -> None:
     """Parse command-line arguments and run the smoke test."""
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "program",
+        type=Path,
+        help='path to the Kenwood updater .exe, or "bad" for the built-in bad update',
+    )
     parser.add_argument("--port", default="/dev/ttyACM0")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--reply-timeout", type=float, default=2.0)
+    parser.add_argument(
+        "-n",
+        "--dry-run",
+        action="store_true",
+        help="print segment flash operations without programming them",
+    )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="print raw TX/RX bytes"
     )
     args = parser.parse_args()
 
-    run(args.port, args.baud, args.reply_timeout, verbose=args.verbose)
+    run(
+        args.program,
+        args.port,
+        args.baud,
+        args.reply_timeout,
+        dry_run=args.dry_run,
+        verbose=args.verbose,
+    )
 
 
 if __name__ == "__main__":
