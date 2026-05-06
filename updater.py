@@ -1036,6 +1036,9 @@ class FLDMLoader:
     ) -> SegmentVerifyResult:
         """Ask the loader to verify the programmed segment contents.
 
+        Asks the loader to verify the checksum against the
+        expected_after_checksum field in the descriptor.
+
         Args:
             descriptor: Active segment metadata that provides the checksum wait.
 
@@ -1128,10 +1131,12 @@ class FLDMLoader:
 
         setup = self._setup_segment(descriptor)
         if setup.current_matches and skip_if_current:
+            if self.verbose: print(f"Segment already matches flash, skipping.", file=sys.stderr)
             return setup
 
         self._begin_transfer(descriptor)
         for offset in range(0, len(data), chunk_size):
+            if self.verbose: print(f"Sending data packet {offset} of {len(data)}", file=sys.stderr)
             self._send_data_packet(
                 descriptor,
                 offset,
@@ -1139,6 +1144,7 @@ class FLDMLoader:
             )
         end_frame = self._end_transfer()
         if descriptor.checksum_length == 0:
+            if self.verbose: print(f"Segment has no checksum range, skipping verification.", file=sys.stderr)
             return SegmentTransferResult(end_frame)
 
         verify = self._verify_segment_done(descriptor)
