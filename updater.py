@@ -512,6 +512,17 @@ class SegmentSetupResult:
 
 
 @dataclass(frozen=True, slots=True)
+class SegmentTransferResult:
+    """Result for a segment that has no final checksum range.
+
+    Attributes:
+        frame: Empty OK frame returned by the loader after transfer end.
+    """
+
+    frame: FLDMFrame
+
+
+@dataclass(frozen=True, slots=True)
 class SegmentVerifyResult:
     """Result of the loader's final segment verification pass.
 
@@ -1057,8 +1068,8 @@ class FLDMLoader:
         skip_if_current: bool = True,
         chunk_size: int = DATA_DEFAULT_CHUNK_SIZE,
         brick_my_radio: bool = False,
-    ) -> SegmentVerifyResult | SegmentSetupResult:
-        """Run the standard setup, erase, write, end, and verify flow.
+    ) -> SegmentSetupResult | SegmentTransferResult | SegmentVerifyResult:
+        """Run the standard setup, erase, write, end, and optional verify flow.
 
         Args:
             descriptor: Segment metadata and validation information.
@@ -1070,7 +1081,8 @@ class FLDMLoader:
                 loader window. Leave false for normal firmware updates.
 
         Returns:
-            `SegmentSetupResult` when skipped, otherwise `SegmentVerifyResult`.
+            `SegmentSetupResult` when skipped, `SegmentTransferResult` for
+            segments with no checksum range, otherwise `SegmentVerifyResult`.
 
         Raises:
             RuntimeError: If final verification returns failure.
@@ -1108,7 +1120,10 @@ class FLDMLoader:
                 offset,
                 data[offset : offset + chunk_size],
             )
-        self._end_transfer()
+        end_frame = self._end_transfer()
+        if descriptor.checksum_length == 0:
+            return SegmentTransferResult(end_frame)
+
         verify = self._verify_segment_done(descriptor)
         if not verify.verified:
             raise RuntimeError("segment verification failed")
