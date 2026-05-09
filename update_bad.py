@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import firmware
-from firmware import FirmwareDescriptor, Segment, SegmentDescriptor
+import fldm
+from firmware import FirmwareDescriptor
 
 SPECIAL_WORD = "bad"
 
-type BadUpdate = tuple[FirmwareDescriptor, tuple[Segment, ...]]
+type BadUpdate = tuple[FirmwareDescriptor, tuple[fldm.Segment, ...]]
 
 
 def build() -> BadUpdate:
@@ -15,15 +15,15 @@ def build() -> BadUpdate:
     wipe_data = b"\x00\x00"
     wipe_length = 0x0028_0000
     wipe_verify_data = wipe_data + b"\xff" * (wipe_length - len(wipe_data))
-    wipe_checksum = firmware.fldm_sum16(wipe_verify_data)
+    wipe_checksum = fldm.fldm_sum16(wipe_verify_data)
     final_zzz_data = b"ZZzo..(-_- ) EX-4420 2013-04-01\x00"
     final_zzz_checksum = 0xC7A8
 
     return (
         FirmwareDescriptor(),
         (
-            Segment(
-                descriptor=SegmentDescriptor(
+            fldm.Segment(
+                descriptor=fldm.SegmentDescriptor(
                     flash_start_addr=0x6020_0000,
                     data_length=len(wipe_data),
                     erase_length=wipe_length,
@@ -40,8 +40,8 @@ def build() -> BadUpdate:
                 index=0,
                 label="FIRMWARE",
             ),
-            Segment(
-                descriptor=SegmentDescriptor(
+            fldm.Segment(
+                descriptor=fldm.SegmentDescriptor(
                     flash_start_addr=0x6020_0040,
                     data_length=len(final_zzz_data),
                     erase_length=0,

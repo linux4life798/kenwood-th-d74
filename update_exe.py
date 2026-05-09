@@ -7,12 +7,13 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Self
 
+import fldm
 from pydantic.dataclasses import dataclass
 import thd75_fw.file_cipher
 import thd75_fw.intel_hex
 import thd75_fw.resource
 
-from firmware import BaudOption, FirmwareDescriptor, Segment, SegmentDescriptor
+from firmware import BaudOption, FirmwareDescriptor
 import utils
 
 type GlobalMetadata = dict[str, list[str]]
@@ -40,7 +41,7 @@ class UpdateExe:
     exe_path: Path
     resource_chars: int
     firmware_descriptor: FirmwareDescriptor
-    segments: tuple[Segment, ...]
+    segments: tuple[fldm.Segment, ...]
     segment_comments: tuple[tuple[str, ...], ...]
 
     @classmethod
@@ -116,7 +117,7 @@ def _parse_firmware_descriptor(
 def _parse_segment(
     index: int,
     block: thd75_fw.file_cipher.DecryptedBlock,
-) -> Segment:
+) -> fldm.Segment:
     """Parse one decrypted block into a firmware segment."""
     metadata = _extract_segment_metadata(block.metadata)
     descriptor = _parse_segment_descriptor(metadata)
@@ -124,7 +125,7 @@ def _parse_segment(
     parsed = thd75_fw.intel_hex.parse(raw)
     if parsed.errors:
         raise ValueError(f"segment {index} Intel HEX parse errors: {parsed.errors}")
-    return Segment(
+    return fldm.Segment(
         descriptor=descriptor,
         data=_segment_data(index, descriptor, bytes(parsed.data)),
         index=index,
@@ -132,7 +133,7 @@ def _parse_segment(
     )
 
 
-def _parse_segment_descriptor(metadata: SegmentMetadata) -> SegmentDescriptor:
+def _parse_segment_descriptor(metadata: SegmentMetadata) -> fldm.SegmentDescriptor:
     """Build a loader segment descriptor from official `$` metadata keys."""
     version_bytes = _metadata_bytes(metadata, "VA", b"")
     version_length = _metadata_int(metadata, "VL")
@@ -144,7 +145,7 @@ def _parse_segment_descriptor(metadata: SegmentMetadata) -> SegmentDescriptor:
             f"VL=0x{version_length:08x}, VA={len(version_bytes)} bytes"
         )
 
-    return SegmentDescriptor(
+    return fldm.SegmentDescriptor(
         flash_start_addr=_required_metadata_int(metadata, "SA"),
         data_length=_required_metadata_int(metadata, "DL"),
         erase_length=_required_metadata_int(metadata, "EL"),
@@ -164,7 +165,7 @@ def _parse_segment_descriptor(metadata: SegmentMetadata) -> SegmentDescriptor:
 
 def _segment_data(
     index: int,
-    descriptor: SegmentDescriptor,
+    descriptor: fldm.SegmentDescriptor,
     parsed_data: bytes,
 ) -> bytes:
     """Return data trimmed to the updater-declared segment length."""
