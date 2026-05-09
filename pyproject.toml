@@ -8,10 +8,7 @@ dependencies = [
     "pydantic>=2.13.4",
     "pyserial>=3.5",
     "thd75-fw",
-    # Bleeding-edge / reproducible git pin (uncomment one active dep only):
     # "thd75-fw @ git+https://github.com/swiftraccoon/thd75-fw.git@9ad7fa58170577a98b92debb1c5ad361940abf6c",
-    # Local sibling checkout (relative to openwood/pyproject.toml):
-    # "thd75-fw @ ../swiftraccoon-thd75-fw",
 ]
 
 [project.scripts]
@@ -23,3 +20,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 py-modules = ["firmware", "fldm", "updater", "update_bad", "update_exe", "utils"]
+
+# [tool.uv.sources]
+# thd75-fw = { git = "https://github.com/swiftraccoon/thd75-fw.git", rev = "9ad7fa58170577a98b92debb1c5ad361940abf6c" }
+# thd75-fw = { path = "../swiftraccoon-thd75-fw", editable = true }
