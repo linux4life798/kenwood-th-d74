@@ -9,16 +9,16 @@ import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import TracebackType
 
+from pydantic.dataclasses import dataclass
 import serial
 from firmware import SegmentDescriptor
 import update_bad
 from update_exe import UpdateExe
-from utils import hex_fmt, validate_uint
+from utils import UInt8, UInt64, hex_fmt, validate_uint
 
 SYNC = b"\xab\xab"
 MAGIC = b"FPROMOD"
@@ -205,15 +205,9 @@ class FLDMFrame:
             validate this byte; it must still be included in the checksum.
     """
 
-    verb: int
+    verb: UInt8
     payload: bytes = b""
-    header: int = 0
-
-    def __post_init__(self) -> None:
-        """Normalize payload bytes and validate fixed-width fields."""
-        validate_uint("header", self.header, 8)
-        validate_uint("verb", self.verb, 8)
-        object.__setattr__(self, "payload", bytes(self.payload))
+    header: UInt8 = 0
 
     @property
     def body_len(self) -> int:
@@ -265,15 +259,12 @@ class FLDMTargetProfile:
         status_code: Trailing status byte. The TH-D74 writes zero.
     """
 
-    target_variant_mask: int
-    loader_profile_mask: int
-    status_code: int
+    target_variant_mask: UInt64
+    loader_profile_mask: UInt64
+    status_code: UInt8
 
     def __post_init__(self) -> None:
         """Validate that the target and loader masks contain exactly one bit."""
-        validate_uint("target_variant_mask", self.target_variant_mask, 64)
-        validate_uint("loader_profile_mask", self.loader_profile_mask, 64)
-        validate_uint("status_code", self.status_code, 8)
         if self.target_variant_mask.bit_count() != 1:
             raise ValueError("target_variant_mask must be a single-bit mask")
         if self.loader_profile_mask.bit_count() != 1:
@@ -337,11 +328,10 @@ class SegmentSetupResult:
             descriptor checks; `1` means update required or setup check failed.
     """
 
-    code: int
+    code: UInt8
 
     def __post_init__(self) -> None:
-        """Validate the one-byte setup result code."""
-        validate_uint("code", self.code, 8)
+        """Validate the setup result code."""
         if self.code not in (0, 1):
             raise ValueError(f"unexpected segment setup result 0x{self.code:02x}")
 
@@ -376,11 +366,10 @@ class SegmentVerifyResult:
             `1` means final verification failed.
     """
 
-    code: int
+    code: UInt8
 
     def __post_init__(self) -> None:
-        """Validate the one-byte final verification result code."""
-        validate_uint("code", self.code, 8)
+        """Validate the final verification result code."""
         if self.code not in (0, 1):
             raise ValueError(f"unexpected segment verify result 0x{self.code:02x}")
 

@@ -11,6 +11,7 @@ from pydantic import Field
 # The extra annotation data is read by validation code when parsing inputs or
 # constructing models, so values outside the matching C-style uint range are
 # rejected up front.
+type UInt8 = Annotated[int, Field(strict=True, ge=0, le=0xFF)]
 type UInt16 = Annotated[int, Field(strict=True, ge=0, le=0xFFFF)]
 type UInt32 = Annotated[int, Field(strict=True, ge=0, le=0xFFFF_FFFF)]
 type UInt64 = Annotated[int, Field(strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)]
