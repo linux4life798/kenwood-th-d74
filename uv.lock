@@ -25,7 +25,7 @@ dependencies = [
 requires-dist = [
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pyserial", specifier = ">=3.5" },
-    { name = "thd75-fw", git = "https://github.com/swiftraccoon/thd75-fw.git?rev=9ad7fa58170577a98b92debb1c5ad361940abf6c" },
+    { name = "thd75-fw" },
 ]
 
 [[package]]
@@ -111,7 +111,11 @@ wheels = [
 [[package]]
 name = "thd75-fw"
 version = "0.1.0"
-source = { git = "https://github.com/swiftraccoon/thd75-fw.git?rev=9ad7fa58170577a98b92debb1c5ad361940abf6c#9ad7fa58170577a98b92debb1c5ad361940abf6c" }
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bf/fe/5b77c3ec78825181deeb642e03e2480e39b973aef8bea8c2f30ab6fba2da/thd75_fw-0.1.0.tar.gz", hash = "sha256:33a338ce2646b8e6c8f8f7082be8c8c8548005872973d5818e792fdb14f8b020", size = 97320, upload-time = "2026-05-07T03:34:50.254Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3a/b6/706f8896860d27bd7f8f6b501dd590c1b2f7d52761111f8c96e08428dc5c/thd75_fw-0.1.0-py3-none-any.whl", hash = "sha256:bf9b63a64073a22876a64bcbcb19ff1c8d5e3c7bc39ae5baf6546ab90e84a012", size = 39555, upload-time = "2026-05-07T03:34:48.725Z" },
+]
 
 [[package]]
 name = "typing-extensions"

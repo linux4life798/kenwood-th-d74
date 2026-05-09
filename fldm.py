@@ -172,12 +172,7 @@ class SegmentDescriptor:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class Segment:
-    """One firmware segment plus host-side metadata.
-
-    `descriptor` and `data` are consumed by the FLDM protocol. `index` and
-    `label` are local metadata used for logging/display; they are not sent to
-    the loader.
-    """
+    """One firmware segment plus its updater metadata."""
 
     descriptor: SegmentDescriptor
     data: bytes

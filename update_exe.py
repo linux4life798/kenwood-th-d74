@@ -121,8 +121,7 @@ def _parse_segment(
     """Parse one decrypted block into a firmware segment."""
     metadata = _extract_segment_metadata(block.metadata)
     descriptor = _parse_segment_descriptor(metadata)
-    raw = _block_raw_data(block.data_hex)
-    parsed = thd75_fw.intel_hex.parse(raw)
+    parsed = thd75_fw.intel_hex.parse(block.data)
     if parsed.errors:
         raise ValueError(f"segment {index} Intel HEX parse errors: {parsed.errors}")
     return fldm.Segment(
@@ -228,14 +227,14 @@ def _decrypt_metadata_blocks(resource_text: str) -> tuple[RawMetadataBlock, ...]
         if not line:
             continue
 
-        line_type, hex_output = thd75_fw.file_cipher.decrypt_line(line, state)
+        line_type, decrypted = thd75_fw.file_cipher.decrypt_line(line, state)
 
         if line_type == "$":
             if has_data:
                 blocks.append(tuple(current_meta))
                 current_meta.clear()
                 has_data = False
-            current_meta.append(bytes.fromhex(hex_output))
+            current_meta.append(decrypted)
         elif line_type == "D":
             has_data = True
 
@@ -272,13 +271,6 @@ def _decode_comment_bytes(line: bytes) -> str:
         except UnicodeDecodeError:
             pass
     return comment.decode("latin-1")
-
-
-def _block_raw_data(data_hex: str) -> bytes:
-    """Return a binary Intel HEX block from decrypted hex text."""
-    if len(data_hex) % 2:
-        data_hex = data_hex[:-1]
-    return bytes.fromhex(data_hex)
 
 
 def _clean_metadata_value(value: str) -> str:
