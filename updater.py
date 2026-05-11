@@ -6,9 +6,28 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from firmware import FirmwareDescriptor
 import fldm
 import update_bad
-from update_exe import UpdateExe
+import update_exe
+import update_flat
+import update_jump
+
+type ProgramPayload = tuple[FirmwareDescriptor, tuple[fldm.Segment, ...]]
+
+
+def load_program(program: Path) -> ProgramPayload:
+    """Load the selected updater payload format."""
+    if program == Path(update_bad.SPECIAL_WORD):
+        return update_bad.build()
+    if program == Path(update_jump.SPECIAL_WORD):
+        return update_jump.build()
+    if not program.is_file():
+        raise FileNotFoundError(program)
+    if update_exe.is_windows_exe(program):
+        return update_exe.load(program)
+    return update_flat.build(program)
+
 
 def run(
     program: Path,
@@ -20,12 +39,7 @@ def run(
     verbose: bool = False,
 ) -> None:
     """Run the metadata-driven FLDM flow."""
-    if program == Path(update_bad.SPECIAL_WORD):
-        firmware_descriptor, segments = update_bad.build()
-    else:
-        update_exe = UpdateExe.from_exe(program)
-        firmware_descriptor = update_exe.firmware_descriptor
-        segments = update_exe.segments
+    firmware_descriptor, segments = load_program(program)
 
     with fldm.FLDMLoader(
         port,
@@ -83,7 +97,7 @@ def main() -> None:
     parser.add_argument(
         "program",
         type=Path,
-        help='path to the Kenwood updater .exe, or "bad" for the built-in bad update',
+        help='path to the Kenwood updater .exe, flat fw binary, or special command "bad" or "jump"',
     )
     parser.add_argument("--port", default="/dev/ttyACM0")
     parser.add_argument("--baud", type=int, default=115200)

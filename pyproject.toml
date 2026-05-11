@@ -19,7 +19,7 @@ requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["firmware", "fldm", "updater", "update_bad", "update_exe", "utils"]
+py-modules = ["firmware", "fldm", "updater", "update_bad", "update_exe", "update_flat", "update_jump", "utils"]
 
 # [tool.uv.sources]
 # thd75-fw = { git = "https://github.com/swiftraccoon/thd75-fw.git", rev = "9ad7fa58170577a98b92debb1c5ad361940abf6c" }

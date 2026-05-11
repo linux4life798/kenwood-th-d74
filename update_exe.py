@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterable
+from enum import IntEnum, unique
 from pathlib import Path
 from typing import Self
 
@@ -20,18 +21,36 @@ type GlobalMetadata = dict[str, list[str]]
 type SegmentMetadata = dict[str, str]
 type RawMetadataBlock = tuple[bytes, ...]
 
-TH_D74_SECTION_LABELS_BY_ADDR: dict[int, str] = {
-    # These are local labels for known TH-D74 flash addresses. The updater EXE
-    # metadata does have comments explaining each section, but they are in
-    # Japanese.
-    0x6020_0000: "FIRMWARE",  # ARM program write data block
-    0x6060_0000: "IMAGE_DATA",  # Portable Image program write data block
-    0x60E0_0000: "DSP_PRGM",  # DSP program write data block
-    0x6100_0000: "VOICE_DATA",  # Voice Announce write data block
-    0x6150_0000: "FONT_DATA",  # Font write data block
-    0x6020_0062: "CHECKBYTES",  # Checksum write data block
-    0x6020_0040: "FINAL_ZZZ",  # Magic-word program write data block
-}
+
+@unique
+class D74OfficialFirmwareSections(IntEnum):
+    """Known TH-D74 flash section base addresses (SA values from updater metadata).
+
+    These are local labels for known TH-D74 flash addresses. The updater EXE
+    metadata does have comments explaining each section, but they are in
+    Japanese.
+    """
+
+    FIRMWARE = 0x6020_0000  # ARM program write data block
+    IMAGE_DATA = 0x6060_0000  # Portable Image program write data block
+    DSP_PRGM = 0x60E0_0000  # DSP program write data block
+    VOICE_DATA = 0x6100_0000  # Voice Announce write data block
+    FONT_DATA = 0x6150_0000  # Font write data block
+    CHECKBYTES = 0x6020_0062  # Checksum write data block
+    FINAL_ZZZ = 0x6020_0040  # Magic-word program write data block
+
+    @property
+    def label(self) -> str:
+        """Short English label (same as the enum member name)."""
+        return self.name
+
+    @classmethod
+    def label_for_flash_start_addr(cls, flash_start_addr: int) -> str:
+        """Resolve a segment label from flash start address (SA)."""
+        try:
+            return cls(flash_start_addr).label
+        except ValueError:
+            return f"UNKNOWN_{utils.hex_fmt(flash_start_addr)}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +115,18 @@ class UpdateExe:
             segment.print_dry_run(compatible=True)
 
 
+def is_windows_exe(program: Path) -> bool:
+    """Return true when the input looks like a Windows updater executable."""
+    with program.open("rb") as fp:
+        return fp.read(2) == b"MZ"
+
+
+def load(program: Path) -> tuple[FirmwareDescriptor, tuple[fldm.Segment, ...]]:
+    """Load firmware metadata and segments from a Windows updater executable."""
+    update_exe = UpdateExe.from_exe(program)
+    return update_exe.firmware_descriptor, update_exe.segments
+
+
 def _parse_firmware_descriptor(
     metadata: tuple[str, ...],
 ) -> FirmwareDescriptor:
@@ -128,7 +159,9 @@ def _parse_segment(
         descriptor=descriptor,
         data=_segment_data(index, descriptor, bytes(parsed.data)),
         index=index,
-        label=_section_label(descriptor.flash_start_addr),
+        label=D74OfficialFirmwareSections.label_for_flash_start_addr(
+            descriptor.flash_start_addr
+        ),
     )
 
 
@@ -181,14 +214,6 @@ def _segment_data(
             f"got 0x{len(parsed_data):08x}, expected 0x{data_length:08x}"
         )
     return parsed_data[:data_length]
-
-
-def _section_label(flash_start_addr: int) -> str:
-    """Return a local label for a known TH-D74 flash address."""
-    return TH_D74_SECTION_LABELS_BY_ADDR.get(
-        flash_start_addr,
-        f"UNKNOWN_{utils.hex_fmt(flash_start_addr)}",
-    )
 
 
 def _extract_global_metadata(metadata: tuple[str, ...]) -> GlobalMetadata:

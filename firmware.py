@@ -28,5 +28,3 @@ class FirmwareDescriptor:
     completion_code: utils.UInt32 | None = None
     firmware_version: str = ""
     segment_count: utils.UInt32 | None = None
-
-
