@@ -29,7 +29,7 @@ def load_program(program: Path) -> ProgramPayload:
     return update_flat.build(program)
 
 
-def run(
+def update(
     program: Path,
     port: str,
     baud: int,
@@ -55,8 +55,8 @@ def run(
         loader.start_programming(
             0 if start_program_code is None else start_program_code
         )
-        # time.sleep(2)  # Show the flashing PROGRAM on display.
 
+        # Some other Kenwood radios might use this command.
         # print("# Select updater target profile.")
         # print(loader.select_target_unit())
 
@@ -113,7 +113,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    run(
+    update(
         args.program,
         args.port,
         args.baud,
