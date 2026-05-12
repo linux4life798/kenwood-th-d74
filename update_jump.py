@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import struct
+from typing import ClassVar
+
+from pydantic.dataclasses import dataclass
 
 from firmware import FirmwareDescriptor
 import fldm
+import utils
 
 SPECIAL_WORD = "jump"
 
@@ -15,19 +19,42 @@ FINAL_ZZZ_FLASH_ADDR = 0x6020_0040
 FINAL_ZZZ_DATA = b"ZZzo..(-_- ) EX-4420 2013-04-01\x00"
 FINAL_ZZZ_CHECKSUM = 0xC7A8
 
-# BootInitializeAndDispatch reads this record at 0x602000c0. With copy length
-# zero, it skips the main-firmware copy and branches directly to dwLoadAddress.
-MAIN_FIRMWARE_DESCRIPTOR_FLASH_ADDR = 0x6020_00C0
-DESCRIPTOR_DW_FLASH_START = 0x6020_0000
-DESCRIPTOR_DW_FLASH_LIMIT = 0x6100_0000
-DESCRIPTOR_DW_IMAGE_SPAN = 0x0050_0000
-DESCRIPTOR_DW_RESERVED14 = 0xFFFF_FFFF
-DESCRIPTOR_DW_RESERVED18 = 0xFFFF_FFFF
-DESCRIPTOR_DW_RESERVED1C = 0xFFFF_FFFF
-JUMP_LOAD_ADDRESS = 0x6000_C9BC
-JUMP_COPY_LENGTH = 0x0000_0000
-
 type JumpUpdate = tuple[FirmwareDescriptor, tuple[fldm.Segment, ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class MainFirmwareDescriptor:
+    """Descriptor record read by BootInitializeAndDispatch at 0x602000c0.
+
+    The FLDM Loader only seems to read `load_address` and `copy_length` from
+    this flash record. For the jump mode, `load_address=0x6000c9bc` enters the
+    bootloader helper that loads the FLDM loader, and `copy_length=0` prevents
+    the normal main-firmware copy before that jump.
+    """
+
+    FLASH_ADDR: ClassVar[int] = 0x6020_00C0
+    STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIIIIII")
+
+    flash_start: utils.UInt32 = 0x6020_0000
+    flash_limit: utils.UInt32 = 0x6100_0000
+    load_address: utils.UInt32 = 0x6000_C9BC
+    image_span: utils.UInt32 = 0x0050_0000
+    copy_length: utils.UInt32 = 0x0000_0000
+    reserved14: utils.UInt32 = 0xFFFF_FFFF
+    reserved18: utils.UInt32 = 0xFFFF_FFFF
+    reserved1c: utils.UInt32 = 0xFFFF_FFFF
+
+    def pack(self) -> bytes:
+        return self.STRUCT.pack(
+            self.flash_start,
+            self.flash_limit,
+            self.load_address,
+            self.image_span,
+            self.copy_length,
+            self.reserved14,
+            self.reserved18,
+            self.reserved1c,
+        )
 
 
 def build() -> JumpUpdate:
@@ -37,11 +64,10 @@ def build() -> JumpUpdate:
         MAIN_FIRMWARE_ERASE_LENGTH - len(wipe_data)
     )
     wipe_checksum = fldm.fldm_sum16(wipe_verify_data)
-    descriptor_data = build_main_firmware_descriptor(
-        # dwLoadAddress=JUMP_LOAD_ADDRESS,
-        dwLoadAddress=0x0,
-        dwCopyLength=JUMP_COPY_LENGTH,
-    )
+    descriptor_data = MainFirmwareDescriptor(
+        # load_address=0x6000_C9BC,
+        load_address=0x0,
+    ).pack()
 
     return (
         FirmwareDescriptor(),
@@ -66,7 +92,7 @@ def build() -> JumpUpdate:
             ),
             fldm.Segment(
                 descriptor=fldm.SegmentDescriptor(
-                    flash_start_addr=MAIN_FIRMWARE_DESCRIPTOR_FLASH_ADDR,
+                    flash_start_addr=MainFirmwareDescriptor.FLASH_ADDR,
                     data_length=len(descriptor_data),
                     erase_length=0,
                     expected_before_checksum=fldm.fldm_sum16(descriptor_data),
@@ -101,29 +127,4 @@ def build() -> JumpUpdate:
                 label="FINAL_ZZZ",
             ),
         ),
-    )
-
-
-def build_main_firmware_descriptor(
-    *,
-    dwLoadAddress: int,
-    dwCopyLength: int,
-) -> bytes:
-    """Pack the descriptor fields that BootInitializeAndDispatch actually uses.
-
-    The FLDM Loader only seems to reads `dwLoadAddress` and `dwCopyLength`
-    from this flash record. For the jump mode, `dwLoadAddress=0x6000c9bc`
-    enters the bootloader helper that loads the FLDM loader, and
-    `dwCopyLength=0` prevents the normal main-firmware copy before that jump.
-    """
-    return struct.pack(
-        "<IIIIIIII",
-        DESCRIPTOR_DW_FLASH_START,
-        DESCRIPTOR_DW_FLASH_LIMIT,
-        dwLoadAddress,
-        DESCRIPTOR_DW_IMAGE_SPAN,
-        dwCopyLength,
-        DESCRIPTOR_DW_RESERVED14,
-        DESCRIPTOR_DW_RESERVED18,
-        DESCRIPTOR_DW_RESERVED1C,
     )

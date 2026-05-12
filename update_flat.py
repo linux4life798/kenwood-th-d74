@@ -21,6 +21,8 @@ def build(program: Path) -> FlatUpdate:
     data = program.read_bytes()
     if not data:
         raise ValueError(f"flat binary is empty: {program}")
+    # For now, we limit the firmware size to the official main firmware slot,
+    # but there is no real reason why we can't expand past this.
     if len(data) > MAIN_FIRMWARE_SLOT_SIZE:
         raise ValueError(
             "flat binary is too large for the first firmware slot: "
