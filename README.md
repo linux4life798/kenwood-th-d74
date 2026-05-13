@@ -63,7 +63,7 @@ These steps help you run your own custom program on the radio.
 The starter code is in the `[bootloader](bootloader)` directory.
 
 ```bash
-apt install gcc-arm-none-eabi
+apt install build-essential gcc-arm-none-eabi
 
 make -C bootloader
 uv run openwood bootloader/bootloader.bin
