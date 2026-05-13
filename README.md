@@ -60,13 +60,13 @@ from custom firmware back to stock firmware.
 ## Custom Firmware
 
 These steps help you run your own custom program on the radio.
-The starter code is in the `[bootloader](bootloader)` directory.
+The starter code is in the `[firmware](firmware)` directory.
 
 ```bash
 apt install build-essential gcc-arm-none-eabi
 
-make -C bootloader
-uv run openwood bootloader/bootloader.bin
+make -C firmware
+uv run openwood firmware/firmware.bin
 ```
 
 ---

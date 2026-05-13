@@ -2,7 +2,7 @@ CROSS_COMPILE ?= arm-none-eabi-
 CC := $(CROSS_COMPILE)gcc
 OBJCOPY := $(CROSS_COMPILE)objcopy
 
-TARGET := bootloader
+TARGET := firmware
 LDSCRIPT := l138-ddr.ld
 OBJS := header.o startup.o main.o
 
