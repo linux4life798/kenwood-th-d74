@@ -5,7 +5,7 @@ radios.
 
 Currently, the python tool can fully update and recover your Kenwood radio
 firmware using the official update exe bundle or any arbitrary firmware payload.
-The updater should function on all majors OS platforms, GNU/Linux, macOS, and
+The updater should function on all major OS platforms, GNU/Linux, macOS, and
 Windows.
 
 ## Exe Update / Recovery
@@ -22,11 +22,11 @@ from custom firmware back to stock firmware.
 
    *Note: If you are recovering from bad firmware, a long power press may not
    work to power the radio off, even if the display appears blank / off.
-   You will need remove the battery and disconnect all external power from the
+   You will need to remove the battery and disconnect all external power from the
    radio. Do not reconnect power.*
 3. Enter the recovery bootloader
 
-   This is done by holding the `PTT` and `1` buttons, while the turning the
+   This is done by holding the `PTT` and `1` buttons, while turning the
    radio on with the power button.
 
    *Note: If you are recovering from bad firmware, please hold `PTT` and `1`
@@ -69,7 +69,7 @@ Checkout the [PROTOCOL.md] and [updater.py] for more detail.
 Thank you to [@cr](https://github.com/cr) and
 [@swiftraccoon](https://github.com/swiftraccoon) for their foundational research
 and software contributions. Their work reflects the kind of careful analysis,
-technical depth, and persistence that helped made Openwood possible.
+technical depth, and persistence that helped make Openwood possible.
 
 You can see some of their amazing work below:
 
