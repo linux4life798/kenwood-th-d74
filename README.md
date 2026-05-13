@@ -57,6 +57,18 @@ from custom firmware back to stock firmware.
 
 [Kenwood software downloads]: https://www.kenwood.com/i/products/info/amateur/software_download.html
 
+## Custom Firmware
+
+These steps help you run your own custom program on the radio.
+The starter code is in the `[bootloader](bootloader)` directory.
+
+```bash
+apt install gcc-arm-none-eabi
+
+make -C bootloader
+uv run openwood bootloader/bootloader.bin
+```
+
 ---
 
 Checkout the [PROTOCOL.md] and [updater.py] for more detail.
