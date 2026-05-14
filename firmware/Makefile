@@ -6,26 +6,25 @@ TARGET := firmware
 LDSCRIPT := l138-ddr.ld
 OBJS := header.o startup.o main.o
 
-CFLAGS := -mcpu=arm926ej-s -marm -ffreestanding -fno-builtin -fno-unwind-tables -fno-asynchronous-unwind-tables -Wall -Wextra
+CFLAGS := -mcpu=arm926ej-s -marm
+CFLAGS += -ffreestanding -fno-builtin -fno-unwind-tables -fno-asynchronous-unwind-tables
+CFLAGS += -Wall -Wextra
 # CFLAGS += -Os
 CFLAGS += -O0
+
+ASFLAGS = $(CFLAGS)
+
 LDFLAGS := -nostdlib -T $(LDSCRIPT) -Wl,-Map,$(TARGET).map
 
 all: $(TARGET).elf $(TARGET).bin
 
-$(TARGET).elf: $(OBJS) $(LDSCRIPT)
+$(TARGET).elf $(TARGET).map: $(OBJS) $(LDSCRIPT)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJS)
 
 $(TARGET).bin: $(TARGET).elf
 	$(OBJCOPY) -O binary $< $@
 
-%.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-%.o: %.S
-	$(CC) $(CFLAGS) -c -o $@ $<
-
 clean:
-	rm -f $(OBJS) $(TARGET).elf $(TARGET).bin $(TARGET).map
+	$(RM) $(OBJS) $(TARGET).elf $(TARGET).bin $(TARGET).map
 
 .PHONY: all clean
