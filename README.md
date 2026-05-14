@@ -65,8 +65,8 @@ The starter code is in the [`firmware`](firmware) directory.
 ```bash
 apt install build-essential gcc-arm-none-eabi
 
-make -C firmware
-uv run openwood firmware/firmware.bin
+make -C firmware/hello-world
+uv run openwood firmware/hello-world/firmware.bin
 ```
 
 ---
