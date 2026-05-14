@@ -60,7 +60,7 @@ from custom firmware back to stock firmware.
 ## Custom Firmware
 
 These steps help you run your own custom program on the radio.
-The starter code is in the `[firmware](firmware)` directory.
+The starter code is in the [`firmware`](firmware) directory.
 
 ```bash
 apt install build-essential gcc-arm-none-eabi
