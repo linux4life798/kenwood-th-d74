@@ -42,7 +42,7 @@ undefined_instruction_handler:
     .ascii "EX-4409 Firmware\0"
 
     .org 0xa0, 0xff
-    .ascii "CraigV1        \0"
+    .ascii "Hello123       \0"
     .byte 0
 
     .org 0xc0, 0xff

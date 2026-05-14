@@ -24,7 +24,10 @@ $(TARGET).elf $(TARGET).map: $(OBJS) $(LDSCRIPT)
 $(TARGET).bin: $(TARGET).elf
 	$(OBJCOPY) -O binary $< $@
 
+flash: $(TARGET).bin
+	uv run openwood $(TARGET).bin
+
 clean:
 	$(RM) $(OBJS) $(TARGET).elf $(TARGET).bin $(TARGET).map
 
-.PHONY: all clean
+.PHONY: all clean flash
