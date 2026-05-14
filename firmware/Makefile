@@ -4,7 +4,7 @@ OBJCOPY := $(CROSS_COMPILE)objcopy
 
 TARGET := firmware
 LDSCRIPT := l138-ddr.ld
-OBJS := header.o startup.o main.o
+OBJS := header.o startup.o main.o rom_functions.o
 
 CFLAGS := -mcpu=arm926ej-s -marm
 CFLAGS += -ffreestanding -fno-builtin -fno-unwind-tables -fno-asynchronous-unwind-tables
