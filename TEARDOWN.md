@@ -30,6 +30,7 @@ The main CPU is a TI OMAP L138, specifically the `OMAPL138EZCEA3`.
   - https://github.com/torvalds/linux/blob/master/drivers/staging/fbtft/fb_hx8347d.c
   - https://github.com/STMicroelectronics/stm32-hx8347d
   - https://github.com/moononournation/Arduino_GFX/wiki/Display-Class
+  - 240x180 TFT mentioning the HX8347D - https://www.kingtechlcd.com/products/1.74-pv017401y0840b.html?utm_source=chatgpt.com
 
 * The Keyscan / IO-Expander module seems to be an [`LM8325-1`].
   - I2C connected module.
