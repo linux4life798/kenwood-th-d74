@@ -2,8 +2,9 @@ ENTRY(__vector_table)
 
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x60200000, LENGTH = 0x00300000
-    DDR   (rwx) : ORIGIN = 0xc0000000, LENGTH = 0x04000000
+    FLASH     (rx)  : ORIGIN = 0x60200000, LENGTH = 0x00300000 /* 3 MiB - Main firmware image slot */
+    DDR       (rwx) : ORIGIN = 0xc0000000, LENGTH = 0x04000000 /* 64 MiB */
+    LOCAL_RAM (rwx) : ORIGIN = 0xffff0000, LENGTH = 0x00002000 /* 8 KiB */
 }
 
 SECTIONS
