@@ -1,4 +1,4 @@
-ENTRY(__firmware_header_start)
+ENTRY(__vector_table)
 
 MEMORY
 {
@@ -15,7 +15,13 @@ SECTIONS
 
     .firmware_header :
     {
-        KEEP(*(.firmware_header))
+        FILL(0xFF)
+        KEEP(*(.firmware_header.vectors))
+        . = ORIGIN(DDR) + 0x40;
+        /* Markers */
+        . = ORIGIN(DDR) + 0x80;
+        /* Version and Descriptors */
+        KEEP(*(.firmware_header.header))
     } > DDR
 
     . = ORIGIN(DDR) + 0x200;

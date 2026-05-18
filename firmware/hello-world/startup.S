@@ -1,19 +1,10 @@
 .section .text.startup, "ax"
 .arm
 
-.equ FLDM_LOADER_ADDRESS, 0x6000c9bc
-.equ DisplayShowInitError, 0x6000cb30
-
 .global ResetHandler
 .global _start
 ResetHandler:
 _start:
-    @ Hacks to delete:
-    @ mov r0,#0x0
-    @ mov r0,#0x1
-    @ bl DisplayShowInitError
-    @ b FLDM_LOADER_ADDRESS
-
     @ Normal Flow
     ldr sp, =__stack_top
 
@@ -60,6 +51,7 @@ IrqHandler:
 .global FiqHandler
 FiqHandler:
     b unhandled_exception
+
 
 unhandled_exception:
     b unhandled_exception
