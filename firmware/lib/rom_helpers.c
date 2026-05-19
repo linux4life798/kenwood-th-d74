@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdbool.h>
 #include <stddef.h>
 
 #include "rom_helpers.h"
@@ -16,6 +17,9 @@ typedef struct {
 
 #define BOOT_DISPLAY_MODE ((volatile uint8_t *)0xffff01cbu)
 #define BOOT_DISPLAY_LAYOUTS ((const BootDisplayLayout *)0x6000db80u)
+
+#define GPIO_BANK01_INPUT_DATA ((volatile uint32_t *)0x01e26020u)
+#define PTT_BUTTON_GPIO_MASK (1u << 7)
 
 static const BootDisplayLayout *DisplayGetCurrentLayout(void)
 {
@@ -92,4 +96,16 @@ void DisplayRenderText(char *text)
     }
 
     DisplayBlitRegion(&frame, &window);
+}
+
+bool ButtonCheckProgrammingModePressed(void)
+{
+    uint32_t dwGpioInData01 = *GPIO_BANK01_INPUT_DATA;
+    uint32_t dwOneKeyPressed = BootKeyCheckProgramModeKey();
+
+    if (((dwGpioInData01 & PTT_BUTTON_GPIO_MASK) == 0) && (dwOneKeyPressed == 1)) {
+        return 1;
+    }
+
+    return 0;
 }
