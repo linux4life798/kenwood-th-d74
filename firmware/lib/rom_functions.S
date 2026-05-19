@@ -12,6 +12,10 @@
 .equ DisplayInitializePanelAndClear, 0x6000d6cc
 .global DisplayInitializeIoExpanderSupport
 .equ DisplayInitializeIoExpanderSupport, 0x6000d790
+
+.global BootKeyCheckProgramModeKey
+.equ BootKeyCheckProgramModeKey, 0x6000c8ec
+
 .global LcdControllerSetDisplayEnableFlag
 .equ LcdControllerSetDisplayEnableFlag, 0x6000d7b0
 .global DisplaySelectBootLayoutAndResetTextState
