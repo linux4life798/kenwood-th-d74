@@ -19,7 +19,7 @@ SECTIONS
         FILL(0xFF)
         KEEP(*(.firmware_header.vectors))
         . = ORIGIN(DDR) + 0x40;
-        /* Markers */
+        /* Marker bytes written by the firmware updater */
         . = ORIGIN(DDR) + 0x80;
         /* Version and Descriptors */
         KEEP(*(.firmware_header.header))

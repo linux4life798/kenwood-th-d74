@@ -7,8 +7,9 @@
  * Initializes the ROM boot peripherals used by this library.
  *
  * Starts timer3, applies the ROM pinmux tables, initializes and clears the LCD
- * panel, initializes IC730 display/key-scanner sideband support over I2C0,
- * enables the LCD controller, and selects the ROM boot text layout.
+ * panel, initializes IC730 key-scanner and display-support control over I2C0
+ * (likely including LCD backlight control), enables the LCD controller, and
+ * selects the ROM boot text layout.
  */
 void InitializePeripherals(void);
 void DisplayClear(void);
