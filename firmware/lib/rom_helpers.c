@@ -41,7 +41,7 @@ static void DisplayBuildBlitDescriptors(LcdBlitFrame *frame, LcdWindowRect *wind
     window->height = layout->height;
 }
 
-void DisplayInitialize(void)
+void InitializePeripherals(void)
 {
     TimerInitialize(3, 0);
     SystemApplyPinmuxTables();

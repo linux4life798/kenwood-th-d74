@@ -5,8 +5,9 @@
 
 int main(void)
 {
-    DisplayInitialize();
+    InitializePeripherals();
     DisplayRenderText("Hello World!");
 
-    for (;;) ;
+    for (;;)
+        ;
 }
